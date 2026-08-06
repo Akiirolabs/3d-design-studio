@@ -1,0 +1,6 @@
+{
+  "name": "3D Design Studio",
+  "description": "An advanced 3D modeling and architectural visualization suite with real-time rendering, vast asset library, PBR material controls, collaborative cloud syncing, and multi-format exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
