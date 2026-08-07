@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { SceneObject, AssetTemplate } from '../types';
 import { ASSET_LIBRARY } from '../data/assetsLibrary';
-import { DEFAULT_PROJECT_OBJECTS, DEFAULT_ENVIRONMENT } from '../utils/storage';
+import { DEFAULT_PROJECT_OBJECTS, DEFAULT_ENVIRONMENT, getInitialProject } from '../utils/storage';
 import { exportToOBJ, exportToSTL } from '../utils/exporters';
 
 describe('CAD Studio 3D Object State, Transform Integrity & Scene Operations', () => {
@@ -378,5 +378,167 @@ describe('CAD Studio 3D Object State, Transform Integrity & Scene Operations', (
     expect(finalShapeA?.rotation).toEqual([0, 90, 0]);
     expect(finalShapeB?.position).toEqual([-4.0, 1.5, 3.0]);
     expect(finalShapeB?.rotation).toEqual([0, 0, 0]);
+  });
+
+  it('should update Object3D matrixWorld cleanly when switching selected objects without stale transform drift', () => {
+    const scene = new THREE.Scene();
+
+    // Create Mesh A
+    const meshA = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+    meshA.position.set(0, 1, 0);
+    meshA.userData = { id: 'mesh_A' };
+    scene.add(meshA);
+
+    // Create Mesh B
+    const meshB = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1), new THREE.MeshStandardMaterial());
+    meshB.position.set(5, 1, 0);
+    meshB.userData = { id: 'mesh_B' };
+    scene.add(meshB);
+
+    // Initial state: Mesh A selected and transformed
+    meshA.position.set(2.5, 1.0, -1.0);
+    meshA.updateMatrix();
+    meshA.updateMatrixWorld(true);
+
+    expect(meshA.matrixWorld.elements[12]).toBeCloseTo(2.5);
+    expect(meshA.matrixWorld.elements[13]).toBeCloseTo(1.0);
+    expect(meshA.matrixWorld.elements[14]).toBeCloseTo(-1.0);
+
+    // Switch selection to Mesh B and transform Mesh B
+    meshB.position.set(-3.0, 2.0, 4.0);
+    meshB.updateMatrix();
+    meshB.updateMatrixWorld(true);
+
+    expect(meshB.matrixWorld.elements[12]).toBeCloseTo(-3.0);
+    expect(meshB.matrixWorld.elements[13]).toBeCloseTo(2.0);
+    expect(meshB.matrixWorld.elements[14]).toBeCloseTo(4.0);
+
+    // Re-select Mesh A and move Mesh A again
+    meshA.position.set(10.0, 0.0, 0.0);
+    meshA.updateMatrix();
+    meshA.updateMatrixWorld(true);
+
+    expect(meshA.matrixWorld.elements[12]).toBeCloseTo(10.0);
+    expect(meshB.matrixWorld.elements[12]).toBeCloseTo(-3.0);
+  });
+
+  it('should construct and update THREE.BoxHelper wireframe bounding box around active selected object', () => {
+    const scene = new THREE.Scene();
+    const activeMesh = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshStandardMaterial());
+    activeMesh.position.set(1, 1, 1);
+    scene.add(activeMesh);
+
+    const boxHelper = new THREE.BoxHelper(activeMesh, 0x06b6d4);
+    scene.add(boxHelper);
+
+    expect(boxHelper).toBeDefined();
+    expect(boxHelper.visible).toBe(true);
+
+    // Transform activeMesh
+    activeMesh.position.set(5, 3, -2);
+    activeMesh.updateMatrixWorld(true);
+    boxHelper.update();
+
+    expect(boxHelper.matrixWorld.elements[12]).toBeCloseTo(0); // BoxHelper positions are calculated relative to vertices
+    expect(boxHelper.geometry.attributes.position.count).toBeGreaterThan(0);
+  });
+
+  it('should maintain zero position/rotation drift across rapid multi-object selection switches and transform operations', () => {
+    let project = getInitialProject();
+    let selectedId: string | null = 'obj_sofa';
+
+    // Verify sofa initial state
+    const sofaObj = project.objects.find((o) => o.id === 'obj_sofa');
+    expect(sofaObj).toBeDefined();
+    const originalSofaPos = [...sofaObj!.position];
+    const originalSofaRot = [...sofaObj!.rotation];
+
+    // Select Feature Wall and modify its transform
+    selectedId = 'obj_wall_back';
+    const wallObj = project.objects.find((o) => o.id === selectedId)!;
+    const updatedWall = {
+      ...wallObj,
+      position: [1.2, 3.4, -5.6] as [number, number, number],
+      rotation: [0, 45, 0] as [number, number, number],
+      scale: [10, 2, 0.5] as [number, number, number],
+    };
+    project = {
+      ...project,
+      objects: project.objects.map((o) => (o.id === selectedId ? updatedWall : o)),
+    };
+
+    // Verify sofa position remained strictly unchanged
+    const sofaAfterWallMove = project.objects.find((o) => o.id === 'obj_sofa');
+    expect(sofaAfterWallMove?.position).toEqual(originalSofaPos);
+    expect(sofaAfterWallMove?.rotation).toEqual(originalSofaRot);
+
+    // Select Glass Facade and modify its transform
+    selectedId = 'obj_wall_glass';
+    const glassObj = project.objects.find((o) => o.id === selectedId)!;
+    const updatedGlass = {
+      ...glassObj,
+      position: [-8.0, 2.0, 1.0] as [number, number, number],
+    };
+    project = {
+      ...project,
+      objects: project.objects.map((o) => (o.id === selectedId ? updatedGlass : o)),
+    };
+
+    // Re-select sofa
+    selectedId = 'obj_sofa';
+    const reselectedSofa = project.objects.find((o) => o.id === selectedId)!;
+    expect(reselectedSofa.position).toEqual(originalSofaPos);
+    expect(reselectedSofa.rotation).toEqual(originalSofaRot);
+
+    // Verify wall position retained its updated transform
+    const wallRecheck = project.objects.find((o) => o.id === 'obj_wall_back');
+    expect(wallRecheck?.position).toEqual([1.2, 3.4, -5.6]);
+    expect(wallRecheck?.rotation).toEqual([0, 45, 0]);
+  });
+
+  it('should handle complex multi-step procedural 3D transformations and raycast object isolation cleanly', () => {
+    const scene = new THREE.Scene();
+
+    // Create 3 procedural groups matching CAD applet architecture
+    const groupA = new THREE.Group();
+    groupA.position.set(-2, 0, 0);
+    groupA.userData = { id: 'obj_A', type: 'cube' };
+    const meshA = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+    groupA.add(meshA);
+    scene.add(groupA);
+
+    const groupB = new THREE.Group();
+    groupB.position.set(2, 0, 0);
+    groupB.userData = { id: 'obj_B', type: 'cylinder' };
+    const meshB = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1), new THREE.MeshStandardMaterial());
+    groupB.add(meshB);
+    scene.add(groupB);
+
+    // Update groupA position and matrices
+    groupA.position.set(-2, 4.5, -3.2);
+    groupA.rotation.set(0, Math.PI / 4, 0);
+    groupA.updateMatrix();
+    groupA.updateMatrixWorld(true);
+
+    // Simulate Raycaster hitting child mesh of groupA
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(new THREE.Vector3(-2, 4.5, 10), new THREE.Vector3(0, 0, -1));
+    const intersects = raycaster.intersectObjects([meshA, meshB], true);
+
+    expect(intersects.length).toBeGreaterThan(0);
+    let topHit: THREE.Object3D = intersects[0].object;
+    while (topHit.parent && topHit.parent !== scene && !topHit.userData.id) {
+      topHit = topHit.parent;
+    }
+    expect(topHit.userData.id).toBe('obj_A');
+    expect(topHit.position.x).toBeCloseTo(-2);
+    expect(topHit.position.y).toBeCloseTo(4.5);
+    expect(topHit.position.z).toBeCloseTo(-3.2);
+
+    // Group B matrix remains isolated
+    groupB.updateMatrix();
+    groupB.updateMatrixWorld(true);
+    expect(groupB.position.x).toBeCloseTo(2);
+    expect(groupB.position.y).toBeCloseTo(0);
   });
 });

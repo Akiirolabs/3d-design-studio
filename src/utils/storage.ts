@@ -179,12 +179,14 @@ export const DEFAULT_PROJECT_OBJECTS: SceneObject[] = [
 ];
 
 export function getInitialProject(): ProjectData {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    try {
-      return JSON.parse(saved);
-    } catch (e) {
-      console.error('Failed to parse saved project:', e);
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved project:', e);
+      }
     }
   }
 
@@ -199,6 +201,7 @@ export function getInitialProject(): ProjectData {
 }
 
 export function saveProjectToStorage(project: ProjectData) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     const updated = { ...project, updatedAt: new Date().toISOString() };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
@@ -219,6 +222,7 @@ export function saveProjectToStorage(project: ProjectData) {
 }
 
 export function loadSavedProjects(): ProjectData[] {
+  if (typeof window === 'undefined' || !window.localStorage) return [getInitialProject()];
   try {
     const raw = localStorage.getItem(SAVED_PROJECTS_KEY);
     return raw ? JSON.parse(raw) : [getInitialProject()];

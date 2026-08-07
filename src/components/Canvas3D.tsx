@@ -20,6 +20,12 @@ interface Canvas3DProps {
     rotation: [number, number, number],
     scale: [number, number, number]
   ) => void;
+  onLiveUpdateObjectTransform?: (
+    id: string,
+    position: [number, number, number],
+    rotation: [number, number, number],
+    scale: [number, number, number]
+  ) => void;
   environment: EnvironmentSettings;
   transformMode: TransformMode;
   renderMode: ViewportRenderMode;
@@ -31,6 +37,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   selectedObjectId,
   onSelectObject,
   onUpdateObjectTransform,
+  onLiveUpdateObjectTransform,
   environment,
   transformMode,
   renderMode,
@@ -47,6 +54,19 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   const isTransformingRef = useRef<boolean>(false);
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const ambientLightRef = useRef<THREE.AmbientLight | null>(null);
+  const selectionBoxRef = useRef<THREE.BoxHelper | null>(null);
+
+  // Keep fresh references to transform callbacks to avoid stale listeners
+  const onUpdateTransformRef = useRef(onUpdateObjectTransform);
+  const onLiveTransformRef = useRef(onLiveUpdateObjectTransform);
+
+  useEffect(() => {
+    onUpdateTransformRef.current = onUpdateObjectTransform;
+  }, [onUpdateObjectTransform]);
+
+  useEffect(() => {
+    onLiveTransformRef.current = onLiveUpdateObjectTransform;
+  }, [onLiveUpdateObjectTransform]);
 
   // States to trigger ViewCube binding once initialized
   const [controlsReady, setControlsReady] = useState(false);
@@ -108,16 +128,14 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     scene.add(transformControls.getHelper());
     transformControlsRef.current = transformControls;
 
-    // Disable OrbitControls while using Gizmo
-    transformControls.addEventListener('dragging-changed', (event) => {
-      orbitControls.enabled = !event.value;
-      isTransformingRef.current = event.value;
-
-      // When dragging finishes, push updated transform back to state
-      if (!event.value && transformControls.object) {
+    // Real-time continuous object transform changes during gizmo manipulation
+    transformControls.addEventListener('objectChange', () => {
+      if (transformControls.object && isTransformingRef.current) {
         const obj = transformControls.object;
         const id = obj.userData.id;
         if (id) {
+          obj.updateMatrix();
+          obj.updateMatrixWorld(true);
           const pos: [number, number, number] = [
             Number(obj.position.x.toFixed(3)),
             Number(obj.position.y.toFixed(3)),
@@ -133,7 +151,38 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
             Number(obj.scale.y.toFixed(3)),
             Number(obj.scale.z.toFixed(3)),
           ];
-          onUpdateObjectTransform(id, pos, rot, scl);
+          onLiveTransformRef.current?.(id, pos, rot, scl);
+        }
+      }
+    });
+
+    // Disable OrbitControls while using Gizmo & commit state on drag finish
+    transformControls.addEventListener('dragging-changed', (event) => {
+      orbitControls.enabled = !event.value;
+      isTransformingRef.current = event.value;
+
+      if (!event.value && transformControls.object) {
+        const obj = transformControls.object;
+        const id = obj.userData.id;
+        if (id) {
+          obj.updateMatrix();
+          obj.updateMatrixWorld(true);
+          const pos: [number, number, number] = [
+            Number(obj.position.x.toFixed(3)),
+            Number(obj.position.y.toFixed(3)),
+            Number(obj.position.z.toFixed(3)),
+          ];
+          const rot: [number, number, number] = [
+            Number(THREE.MathUtils.radToDeg(obj.rotation.x).toFixed(2)),
+            Number(THREE.MathUtils.radToDeg(obj.rotation.y).toFixed(2)),
+            Number(THREE.MathUtils.radToDeg(obj.rotation.z).toFixed(2)),
+          ];
+          const scl: [number, number, number] = [
+            Number(obj.scale.x.toFixed(3)),
+            Number(obj.scale.y.toFixed(3)),
+            Number(obj.scale.z.toFixed(3)),
+          ];
+          onUpdateTransformRef.current(id, pos, rot, scl);
         }
       }
     });
@@ -216,6 +265,9 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
       orbitControls.update();
+      if (selectionBoxRef.current && selectionBoxRef.current.visible) {
+        selectionBoxRef.current.update();
+      }
       renderer.render(scene, camera);
     };
     animate();
@@ -354,6 +406,8 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
           THREE.MathUtils.degToRad(objData.rotation[2])
         );
         object3D.scale.set(...objData.scale);
+        object3D.updateMatrix();
+        object3D.updateMatrixWorld(true);
       }
 
       // Update visibility and material properties
@@ -361,19 +415,48 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       updateObjectMaterials(object3D, objData, renderMode);
     });
 
-    // Attach/Detach Gizmo to selected object
+    // Attach/Detach Gizmo and Wireframe Selection Box
     if (selectedObjectId) {
       const selectedMesh = existingMap.get(selectedObjectId);
       const selData = objects.find((o) => o.id === selectedObjectId);
       if (selectedMesh && selData && !selData.locked) {
-        transformControlsRef.current?.attach(selectedMesh);
+        selectedMesh.updateMatrix();
+        selectedMesh.updateMatrixWorld(true);
+        if (transformControlsRef.current?.object !== selectedMesh) {
+          transformControlsRef.current?.attach(selectedMesh);
+        }
+
+        // Attach or update persistent wireframe box
+        if (!selectionBoxRef.current) {
+          const box = new THREE.BoxHelper(selectedMesh, 0x06b6d4); // Cyan wireframe highlight
+          scene.add(box);
+          selectionBoxRef.current = box;
+        } else {
+          selectionBoxRef.current.setFromObject(selectedMesh);
+          selectionBoxRef.current.visible = true;
+        }
+        selectionBoxRef.current.update();
       } else {
         transformControlsRef.current?.detach();
+        if (selectionBoxRef.current) selectionBoxRef.current.visible = false;
       }
     } else {
       transformControlsRef.current?.detach();
+      if (selectionBoxRef.current) selectionBoxRef.current.visible = false;
     }
   }, [objects, selectedObjectId, renderMode]);
+
+  // Console validation logger for selection events
+  useEffect(() => {
+    if (selectedObjectId) {
+      const sel = objects.find((o) => o.id === selectedObjectId);
+      console.log(
+        `[CAD Studio Selection] Active Object -> ID: "${selectedObjectId}", Name: "${sel?.name ?? 'Unknown'}", Type: "${sel?.type}"`
+      );
+    } else {
+      console.log('[CAD Studio Selection] Canvas Deselected (No Active Object)');
+    }
+  }, [selectedObjectId, objects]);
 
   // Click & Raycasting Selection
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -383,8 +466,14 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     // Right-click (2) and middle-click (1) are reserved for viewport orbiting & panning
     if (event.button !== 0) return;
 
-    // Ignore clicks if actively interacting with transform gizmo
-    if (transformControlsRef.current?.dragging || isTransformingRef.current) return;
+    // Ignore clicks if actively interacting with or clicking transform gizmo handles
+    if (
+      transformControlsRef.current?.dragging ||
+      isTransformingRef.current ||
+      transformControlsRef.current?.axis !== null
+    ) {
+      return;
+    }
 
     const rect = containerRef.current.getBoundingClientRect();
     const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -393,19 +482,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(x, y), cameraRef.current);
 
-    // Check if user clicked on TransformControls gizmo handles
-    if (transformControlsRef.current?.object) {
-      const helper = transformControlsRef.current.getHelper();
-      const gizmoIntersects = raycaster.intersectObject(helper, true);
-      if (gizmoIntersects.length > 0) {
-        // Clicked on Gizmo axis/ring/box, preserve current object selection
-        return;
-      }
-    }
-
     const selectableObjects: THREE.Object3D[] = [];
     meshMapRef.current.forEach((mesh) => {
-      selectableObjects.push(mesh);
+      if (mesh.visible) {
+        selectableObjects.push(mesh);
+      }
     });
 
     const intersects = raycaster.intersectObjects(selectableObjects, true);

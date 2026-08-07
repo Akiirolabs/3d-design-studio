@@ -90,12 +90,16 @@ export default function App() {
 
   // Add Asset from Library
   const handleAddAsset = (template: AssetTemplate) => {
+    const count = project.objects.length;
+    const offsetX = count > 0 ? ((count * 1.5) % 6) - 2 : 0;
+    const offsetZ = count > 0 ? (Math.floor(count / 4) * 1.5) % 6 - 2 : 0;
+
     const newObj: SceneObject = {
       id: `obj_${Date.now()}`,
-      name: `${template.name} ${project.objects.length + 1}`,
+      name: `${template.name} ${count + 1}`,
       category: template.category,
       type: template.type,
-      position: [0, 1, 0],
+      position: [offsetX, 1, offsetZ],
       rotation: [0, 0, 0],
       scale: template.defaultScale,
       color: template.defaultColor,
@@ -120,7 +124,41 @@ export default function App() {
     pushStateToHistory(updatedProject);
   };
 
-  // Update Object Transform directly from Gizmo drag
+  // Real-time live update for continuous Gizmo drag (updates project state smoothly without history overhead)
+  const handleLiveUpdateObjectTransform = useCallback(
+    (
+      id: string,
+      position: [number, number, number],
+      rotation: [number, number, number],
+      scale: [number, number, number]
+    ) => {
+      setProject((prev) => {
+        const target = prev.objects.find((o) => o.id === id);
+        if (!target) return prev;
+
+        if (
+          target.position[0] === position[0] &&
+          target.position[1] === position[1] &&
+          target.position[2] === position[2] &&
+          target.rotation[0] === rotation[0] &&
+          target.rotation[1] === rotation[1] &&
+          target.rotation[2] === rotation[2] &&
+          target.scale[0] === scale[0] &&
+          target.scale[1] === scale[1] &&
+          target.scale[2] === scale[2]
+        ) {
+          return prev;
+        }
+
+        const updatedObj = { ...target, position, rotation, scale };
+        const updatedObjects = prev.objects.map((o) => (o.id === id ? updatedObj : o));
+        return { ...prev, objects: updatedObjects };
+      });
+    },
+    []
+  );
+
+  // Update Object Transform directly from Gizmo drag (commits transform state to history & localStorage)
   const handleUpdateObjectTransform = (
     id: string,
     position: [number, number, number],
@@ -289,6 +327,7 @@ export default function App() {
             selectedObjectId={selectedObjectId}
             onSelectObject={setSelectedObjectId}
             onUpdateObjectTransform={handleUpdateObjectTransform}
+            onLiveUpdateObjectTransform={handleLiveUpdateObjectTransform}
             environment={project.environment}
             transformMode={transformMode}
             renderMode={renderMode}
