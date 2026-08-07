@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dev Cycle"
+  short_description: "Coordinate bounded developer and auditor iterations"
+  default_prompt: "Use $dev-cycle to run a bounded DevBase and DevMind improvement cycle."

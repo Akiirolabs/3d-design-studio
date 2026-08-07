@@ -1,0 +1,4 @@
+interface:
+  display_name: "DevBase"
+  short_description: "Implement and verify scoped application improvements"
+  default_prompt: "Use $devbase to implement the approved fixes and verify them without committing."

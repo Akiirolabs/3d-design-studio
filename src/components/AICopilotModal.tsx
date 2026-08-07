@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Sparkles, X, Loader2, Wand2, Compass, Layers } from 'lucide-react';
 import { SceneObject, EnvironmentSettings } from '../types';
+import { isEnvironmentTheme, validateSceneObjects } from '../utils/projectValidation';
 
 interface AICopilotModalProps {
   isOpen: boolean;
@@ -64,7 +65,20 @@ export const AICopilotModal: React.FC<AICopilotModalProps> = ({
         locked: false,
       }));
 
-      onApplyGeneratedScene(newObjects, generatedData.sceneTitle || finalPrompt, generatedData.environmentTheme);
+      const validation = validateSceneObjects(newObjects);
+      if ('error' in validation) {
+        throw new Error(`Generated scene was invalid: ${validation.error}`);
+      }
+
+      if (generatedData.environmentTheme !== undefined && !isEnvironmentTheme(generatedData.environmentTheme)) {
+        throw new Error('Generated scene was invalid: environmentTheme is not supported.');
+      }
+
+      if (generatedData.sceneTitle !== undefined && typeof generatedData.sceneTitle !== 'string') {
+        throw new Error('Generated scene was invalid: sceneTitle must be text.');
+      }
+
+      onApplyGeneratedScene(validation.data, generatedData.sceneTitle || finalPrompt, generatedData.environmentTheme);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error communicating with server-side Gemini AI');

@@ -16,6 +16,7 @@ import {
   generateRoomCode,
 } from './utils/storage';
 import { captureRenderSnapshot } from './utils/exporters';
+import { validateProjectData } from './utils/projectValidation';
 import { Header } from './components/Header';
 import { SidebarLeft } from './components/SidebarLeft';
 import { SidebarRight } from './components/SidebarRight';
@@ -211,13 +212,14 @@ export default function App() {
   // Import JSON Project
   const handleImportProjectJSON = (jsonData: string) => {
     try {
-      const parsed = JSON.parse(jsonData);
-      if (parsed.objects && Array.isArray(parsed.objects)) {
-        setProject(parsed);
-        pushStateToHistory(parsed);
+      const result = validateProjectData(JSON.parse(jsonData));
+      if ('error' in result) {
+        alert(`Could not import project: ${result.error}`);
+        return;
       }
+      pushStateToHistory(result.data);
     } catch (e) {
-      alert('Invalid 3D Project JSON file.');
+      alert('Could not import project: the selected file is not valid JSON.');
     }
   };
 

@@ -9,6 +9,8 @@ import {
   TransformMode,
   ViewportRenderMode,
 } from '../types';
+import { disposeMaterials, disposeObject3DResources } from '../utils/threeResources';
+import { canTransformSelection, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
 
 interface Canvas3DProps {
   objects: SceneObject[];
@@ -128,64 +130,65 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     scene.add(transformControls.getHelper());
     transformControlsRef.current = transformControls;
 
-    // Real-time continuous object transform changes during gizmo manipulation
-    transformControls.addEventListener('objectChange', () => {
-      if (transformControls.object && isTransformingRef.current) {
-        const obj = transformControls.object;
-        const id = obj.userData.id;
-        if (id) {
-          obj.updateMatrix();
-          obj.updateMatrixWorld(true);
-          const pos: [number, number, number] = [
-            Number(obj.position.x.toFixed(3)),
-            Number(obj.position.y.toFixed(3)),
-            Number(obj.position.z.toFixed(3)),
-          ];
-          const rot: [number, number, number] = [
-            Number(THREE.MathUtils.radToDeg(obj.rotation.x).toFixed(2)),
-            Number(THREE.MathUtils.radToDeg(obj.rotation.y).toFixed(2)),
-            Number(THREE.MathUtils.radToDeg(obj.rotation.z).toFixed(2)),
-          ];
-          const scl: [number, number, number] = [
-            Number(obj.scale.x.toFixed(3)),
-            Number(obj.scale.y.toFixed(3)),
-            Number(obj.scale.z.toFixed(3)),
-          ];
-          onLiveTransformRef.current?.(id, pos, rot, scl);
-        }
+    type TransformUpdate = {
+      id: string;
+      position: [number, number, number];
+      rotation: [number, number, number];
+      scale: [number, number, number];
+    };
+    const readTransform = (obj: THREE.Object3D): TransformUpdate | null => {
+      const id = obj.userData.id;
+      if (!id) return null;
+      obj.updateMatrix();
+      obj.updateMatrixWorld(true);
+      return {
+        id,
+        position: [
+          Number(obj.position.x.toFixed(3)),
+          Number(obj.position.y.toFixed(3)),
+          Number(obj.position.z.toFixed(3)),
+        ],
+        rotation: [
+          Number(THREE.MathUtils.radToDeg(obj.rotation.x).toFixed(2)),
+          Number(THREE.MathUtils.radToDeg(obj.rotation.y).toFixed(2)),
+          Number(THREE.MathUtils.radToDeg(obj.rotation.z).toFixed(2)),
+        ],
+        scale: [
+          Number(obj.scale.x.toFixed(3)),
+          Number(obj.scale.y.toFixed(3)),
+          Number(obj.scale.z.toFixed(3)),
+        ],
+      };
+    };
+    const liveUpdates = createFrameCoalescer<TransformUpdate>(
+      requestAnimationFrame,
+      cancelAnimationFrame,
+      ({ id, position, rotation, scale }) => {
+        onLiveTransformRef.current?.(id, position, rotation, scale);
       }
-    });
+    );
+    const handleObjectChange = () => {
+      if (!isTransformingRef.current || !transformControls.object) return;
+      const update = readTransform(transformControls.object);
+      if (update) liveUpdates.schedule(update);
+    };
+    transformControls.addEventListener('objectChange', handleObjectChange);
 
     // Disable OrbitControls while using Gizmo & commit state on drag finish
-    transformControls.addEventListener('dragging-changed', (event) => {
-      orbitControls.enabled = !event.value;
-      isTransformingRef.current = event.value;
+    const handleDraggingChanged = (event: { value: unknown }) => {
+      const transition = getDragTransition(isTransformingRef.current, event.value);
+      orbitControls.enabled = !transition.isDragging;
+      isTransformingRef.current = transition.isDragging;
 
-      if (!event.value && transformControls.object) {
-        const obj = transformControls.object;
-        const id = obj.userData.id;
-        if (id) {
-          obj.updateMatrix();
-          obj.updateMatrixWorld(true);
-          const pos: [number, number, number] = [
-            Number(obj.position.x.toFixed(3)),
-            Number(obj.position.y.toFixed(3)),
-            Number(obj.position.z.toFixed(3)),
-          ];
-          const rot: [number, number, number] = [
-            Number(THREE.MathUtils.radToDeg(obj.rotation.x).toFixed(2)),
-            Number(THREE.MathUtils.radToDeg(obj.rotation.y).toFixed(2)),
-            Number(THREE.MathUtils.radToDeg(obj.rotation.z).toFixed(2)),
-          ];
-          const scl: [number, number, number] = [
-            Number(obj.scale.x.toFixed(3)),
-            Number(obj.scale.y.toFixed(3)),
-            Number(obj.scale.z.toFixed(3)),
-          ];
-          onUpdateTransformRef.current(id, pos, rot, scl);
+      if (transition.ended) {
+        liveUpdates.cancel();
+        const update = transformControls.object ? readTransform(transformControls.object) : null;
+        if (update) {
+          onUpdateTransformRef.current(update.id, update.position, update.rotation, update.scale);
         }
       }
-    });
+    };
+    transformControls.addEventListener('dragging-changed', handleDraggingChanged);
 
     // Handle Ctrl + Right-Click Orbiting Navigation
     const handleContextMenu = (e: MouseEvent) => {
@@ -294,6 +297,27 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       domEl.removeEventListener('pointermove', handlePointerMoveGlobal, true);
       window.removeEventListener('keydown', handleKeyDownGlobal, true);
       window.removeEventListener('keyup', handleKeyUpGlobal, true);
+      transformControls.removeEventListener('dragging-changed', handleDraggingChanged);
+      transformControls.removeEventListener('objectChange', handleObjectChange);
+      liveUpdates.cancel();
+      transformControls.detach();
+      transformControls.dispose();
+      orbitControls.dispose();
+      meshMapRef.current.forEach((object) => {
+        scene.remove(object);
+        disposeObject3DResources(object);
+      });
+      meshMapRef.current.clear();
+      if (selectionBoxRef.current) {
+        scene.remove(selectionBoxRef.current);
+        selectionBoxRef.current.geometry.dispose();
+        disposeMaterials([selectionBoxRef.current.material]);
+        selectionBoxRef.current = null;
+      }
+      scene.remove(gridHelper);
+      gridHelper.geometry.dispose();
+      disposeMaterials(Array.isArray(gridHelper.material) ? gridHelper.material : [gridHelper.material]);
+      dirLight.shadow.dispose();
       if (renderer.domElement.parentNode) {
         renderer.domElement.parentNode.removeChild(renderer.domElement);
       }
@@ -374,6 +398,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
           transformControlsRef.current.detach();
         }
         scene.remove(mesh);
+        disposeObject3DResources(mesh);
         existingMap.delete(id);
       }
     });
@@ -389,6 +414,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
             transformControlsRef.current.detach();
           }
           scene.remove(object3D);
+          disposeObject3DResources(object3D);
         }
         object3D = createProcedural3DObject(objData, renderMode);
         object3D.userData = { id: objData.id, type: objData.type };
@@ -419,10 +445,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     if (selectedObjectId) {
       const selectedMesh = existingMap.get(selectedObjectId);
       const selData = objects.find((o) => o.id === selectedObjectId);
-      if (selectedMesh && selData && !selData.locked) {
+      if (selectedMesh && canTransformSelection(selData)) {
         selectedMesh.updateMatrix();
         selectedMesh.updateMatrixWorld(true);
         if (transformControlsRef.current?.object !== selectedMesh) {
+          transformControlsRef.current?.detach();
           transformControlsRef.current?.attach(selectedMesh);
         }
 
@@ -445,18 +472,6 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       if (selectionBoxRef.current) selectionBoxRef.current.visible = false;
     }
   }, [objects, selectedObjectId, renderMode]);
-
-  // Console validation logger for selection events
-  useEffect(() => {
-    if (selectedObjectId) {
-      const sel = objects.find((o) => o.id === selectedObjectId);
-      console.log(
-        `[CAD Studio Selection] Active Object -> ID: "${selectedObjectId}", Name: "${sel?.name ?? 'Unknown'}", Type: "${sel?.type}"`
-      );
-    } else {
-      console.log('[CAD Studio Selection] Canvas Deselected (No Active Object)');
-    }
-  }, [selectedObjectId, objects]);
 
   // Click & Raycasting Selection
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -928,10 +943,29 @@ function getMaterialForData(data: SceneObject, renderMode: ViewportRenderMode): 
  * Updates material on existing group children
  */
 function updateObjectMaterials(group: THREE.Object3D, data: SceneObject, renderMode: ViewportRenderMode) {
+  const materialKey = JSON.stringify([
+    renderMode,
+    data.color,
+    data.metalness,
+    data.roughness,
+    data.transmission,
+    data.clearcoat,
+    data.emission,
+    data.materialPreset,
+    data.type,
+  ]);
+  if (group.userData.materialKey === materialKey) return;
+
   const newMat = getMaterialForData(data, renderMode);
+  const replacedMaterials = new Set<THREE.Material>();
   group.traverse((child) => {
     if (child instanceof THREE.Mesh && !child.userData.customMat) {
+      const oldMaterials = Array.isArray(child.material) ? child.material : [child.material];
+      oldMaterials.forEach((material) => replacedMaterials.add(material));
       child.material = newMat;
     }
   });
+  replacedMaterials.delete(newMat);
+  disposeMaterials(replacedMaterials);
+  group.userData.materialKey = materialKey;
 }

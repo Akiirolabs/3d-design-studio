@@ -1,4 +1,5 @@
 import { ProjectData, SceneObject, EnvironmentSettings, CloudSession } from '../types';
+import { validateProjectData } from './projectValidation';
 
 const STORAGE_KEY = 'aether3d_studio_current_project';
 const SAVED_PROJECTS_KEY = 'aether3d_studio_saved_projects';
@@ -183,7 +184,9 @@ export function getInitialProject(): ProjectData {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const result = validateProjectData(JSON.parse(saved));
+        if ('data' in result) return result.data;
+        console.error(`Invalid saved project: ${result.error}`);
       } catch (e) {
         console.error('Failed to parse saved project:', e);
       }
@@ -208,7 +211,13 @@ export function saveProjectToStorage(project: ProjectData) {
     
     // Save to list of saved projects
     const allSavedRaw = localStorage.getItem(SAVED_PROJECTS_KEY);
-    let allSaved: ProjectData[] = allSavedRaw ? JSON.parse(allSavedRaw) : [];
+    const parsedSaved: unknown = allSavedRaw ? JSON.parse(allSavedRaw) : [];
+    const allSaved: ProjectData[] = Array.isArray(parsedSaved)
+      ? parsedSaved.flatMap((entry) => {
+          const result = validateProjectData(entry);
+          return result.success ? [result.data] : [];
+        })
+      : [];
     const index = allSaved.findIndex((p) => p.id === updated.id);
     if (index >= 0) {
       allSaved[index] = updated;
@@ -225,7 +234,14 @@ export function loadSavedProjects(): ProjectData[] {
   if (typeof window === 'undefined' || !window.localStorage) return [getInitialProject()];
   try {
     const raw = localStorage.getItem(SAVED_PROJECTS_KEY);
-    return raw ? JSON.parse(raw) : [getInitialProject()];
+    if (!raw) return [getInitialProject()];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [getInitialProject()];
+    const valid = parsed.flatMap((entry) => {
+      const result = validateProjectData(entry);
+      return result.success ? [result.data] : [];
+    });
+    return valid.length > 0 ? valid : [getInitialProject()];
   } catch (e) {
     return [getInitialProject()];
   }
