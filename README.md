@@ -25,7 +25,7 @@
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22 or newer
 - npm
 - A modern browser with WebGL support
 - A Gemini API key only if you want to use AI scene generation
@@ -101,6 +101,24 @@ Projects are stored in the current browser's local storage. Clearing site data c
 | --- | --- | --- |
 | `GEMINI_API_KEY` | No | Enables Gemini-powered scene generation |
 | `NODE_ENV` | No | Set to `production` when running the production build |
+| `APP_ORIGIN` | In production | Exact public origin allowed to make authenticated mutations, such as `https://3d.akiiro.com` |
 | `DISABLE_HMR` | No | Set to `true` to disable Vite hot-module reloading |
 
 Do not commit API keys or other secrets to Git.
+
+## Production reverse-proxy security
+
+The production server binds to `127.0.0.1:3000` and trusts forwarding headers only from a loopback reverse proxy. Keep port `3000` private and run Nginx on the same host.
+
+At the Nginx/Cloudflare boundary:
+
+- Configure Nginx's real-IP module with Cloudflare's current, official IPv4 and IPv6 proxy ranges. Supply and maintain those trusted ranges in server configuration; do not copy a stale range list into this repository.
+- Use `real_ip_header CF-Connecting-IP` (with recursive real-IP processing) so `$remote_addr` is restored to the client address only when the connection came from a configured Cloudflare range.
+- Overwrite, rather than append, the forwarding header sent to this app:
+
+  ```nginx
+  proxy_set_header X-Forwarded-For $remote_addr;
+  ```
+
+  Do not use `$proxy_add_x_forwarded_for` here because it preserves attacker-supplied entries.
+- Restrict the VPS firewall/origin so ports `80` and `443` accept traffic only from Cloudflare's current official proxy ranges, while retaining the administrator's required SSH access. Never expose port `3000` publicly.

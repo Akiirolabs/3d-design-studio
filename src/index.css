@@ -1,1 +1,60 @@
 @import "tailwindcss";
+
+/* Theme overrides are deliberately scoped: Dev mode has no overrides and retains the original UI. */
+[data-app-theme="dark"] { color-scheme: dark; }
+[data-app-theme="dark"] [class~="bg-slate-950"],
+[data-app-theme="dark"] [class~="bg-slate-950/50"],
+[data-app-theme="dark"] [class~="bg-slate-950/60"],
+[data-app-theme="dark"] [class~="bg-slate-950/70"],
+[data-app-theme="dark"] [class~="bg-slate-950/80"] { background-color: #00040d !important; }
+[data-app-theme="dark"] [class~="bg-slate-900"],
+[data-app-theme="dark"] [class~="bg-slate-900/80"],
+[data-app-theme="dark"] [class~="bg-slate-900/90"],
+[data-app-theme="dark"] [class~="bg-slate-900/95"] { background-color: #050b16 !important; }
+[data-app-theme="dark"] [class~="bg-slate-800"],
+[data-app-theme="dark"] [class~="bg-slate-800/60"],
+[data-app-theme="dark"] [class~="bg-slate-800/80"],
+[data-app-theme="dark"] [class~="bg-slate-800/90"] { background-color: #0b1220 !important; }
+[data-app-theme="dark"] [class*="border-slate-7"],
+[data-app-theme="dark"] [class*="border-slate-8"] { border-color: #1b2738 !important; }
+
+[data-app-theme="light"] { color-scheme: light; }
+[data-app-theme="light"] [class~="bg-slate-950"],
+[data-app-theme="light"] [class~="bg-slate-950/50"],
+[data-app-theme="light"] [class~="bg-slate-950/60"],
+[data-app-theme="light"] [class~="bg-slate-950/70"],
+[data-app-theme="light"] [class~="bg-slate-950/80"],
+[data-app-theme="light"] [class~="bg-slate-900"],
+[data-app-theme="light"] [class~="bg-slate-900/80"],
+[data-app-theme="light"] [class~="bg-slate-900/90"],
+[data-app-theme="light"] [class~="bg-slate-900/95"] { background-color: #ffffff !important; }
+[data-app-theme="light"] [class~="bg-slate-800"],
+[data-app-theme="light"] [class~="bg-slate-800/50"],
+[data-app-theme="light"] [class~="bg-slate-800/60"],
+[data-app-theme="light"] [class~="bg-slate-800/80"],
+[data-app-theme="light"] [class~="bg-slate-800/90"] { background-color: #f1f5f9 !important; }
+[data-app-theme="light"] [class~="bg-black/70"] { background-color: rgb(226 232 240 / 88%) !important; }
+[data-app-theme="light"] [class*="from-sky-950"],
+[data-app-theme="light"] [class*="to-indigo-950"] { --tw-gradient-from: #f8fafc !important; --tw-gradient-to: #ffffff !important; }
+[data-app-theme="light"] [class*="bg-indigo-500/20"],
+[data-app-theme="light"] [class*="bg-sky-500/20"],
+[data-app-theme="light"] [class*="bg-sky-500/15"],
+[data-app-theme="light"] [class*="bg-sky-500/10"] { background-color: #e0f2fe !important; }
+[data-app-theme="light"] [class*="text-slate-1"],
+[data-app-theme="light"] [class*="text-slate-2"] { color: #0f172a !important; }
+[data-app-theme="light"] [class*="text-slate-3"],
+[data-app-theme="light"] [class*="text-slate-4"] { color: #334155 !important; }
+[data-app-theme="light"] [class*="text-slate-5"],
+[data-app-theme="light"] [class*="text-slate-6"] { color: #64748b !important; }
+[data-app-theme="light"] [class*="border-slate-7"],
+[data-app-theme="light"] [class*="border-slate-8"] { border-color: #cbd5e1 !important; }
+[data-app-theme="light"] [class*="hover:bg-slate-7"]:hover,
+[data-app-theme="light"] [class*="hover:bg-slate-8"]:hover { background-color: #e2e8f0 !important; }
+[data-app-theme="light"] [class*="focus:bg-slate-8"]:focus { background-color: #f1f5f9 !important; }
+[data-app-theme="light"] input:disabled,
+[data-app-theme="light"] select:disabled,
+[data-app-theme="light"] button:disabled { opacity: 0.58; }
+
+[data-reduced-motion="true"] *, [data-reduced-motion="true"] *::before, [data-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important;
+}

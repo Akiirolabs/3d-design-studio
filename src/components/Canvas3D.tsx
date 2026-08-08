@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { disposeMaterials, disposeObject3DResources } from '../utils/threeResources';
 import { canTransformSelection, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
+import { viewportInputPolicy } from '../utils/modalKeyboard';
 
 interface Canvas3DProps {
   objects: SceneObject[];
@@ -32,6 +33,7 @@ interface Canvas3DProps {
   transformMode: TransformMode;
   renderMode: ViewportRenderMode;
   onRegisterRenderer: (renderer: THREE.WebGLRenderer, scene: THREE.Scene) => void;
+  shortcutsDisabled?: boolean;
 }
 
 export const Canvas3D: React.FC<Canvas3DProps> = ({
@@ -44,6 +46,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   transformMode,
   renderMode,
   onRegisterRenderer,
+  shortcutsDisabled = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -57,6 +60,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const ambientLightRef = useRef<THREE.AmbientLight | null>(null);
   const selectionBoxRef = useRef<THREE.BoxHelper | null>(null);
+  const shortcutsDisabledRef = useRef(shortcutsDisabled);
 
   // Keep fresh references to transform callbacks to avoid stale listeners
   const onUpdateTransformRef = useRef(onUpdateObjectTransform);
@@ -69,6 +73,18 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   useEffect(() => {
     onLiveTransformRef.current = onLiveUpdateObjectTransform;
   }, [onLiveUpdateObjectTransform]);
+
+  useEffect(() => {
+    shortcutsDisabledRef.current = shortcutsDisabled;
+    const orbitControls = orbitControlsRef.current;
+    const transformControls = transformControlsRef.current;
+    const policy = viewportInputPolicy(shortcutsDisabled, isTransformingRef.current);
+    if (orbitControls) {
+      orbitControls.mouseButtons.RIGHT = policy.rightButton === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+      orbitControls.enabled = policy.orbitEnabled;
+    }
+    if (transformControls) transformControls.enabled = policy.transformEnabled;
+  }, [shortcutsDisabled]);
 
   // States to trigger ViewCube binding once initialized
   const [controlsReady, setControlsReady] = useState(false);
@@ -196,6 +212,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     };
 
     const handlePointerDownGlobal = (e: PointerEvent) => {
+      if (shortcutsDisabledRef.current) return;
       if (orbitControlsRef.current && e.button === 2) {
         if (e.ctrlKey || e.metaKey) {
           orbitControlsRef.current.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
@@ -206,6 +223,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     };
 
     const handlePointerMoveGlobal = (e: PointerEvent) => {
+      if (shortcutsDisabledRef.current) return;
       if (orbitControlsRef.current && (e.buttons === 2 || e.buttons === 3)) {
         if (e.ctrlKey || e.metaKey) {
           orbitControlsRef.current.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
@@ -214,12 +232,14 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     };
 
     const handleKeyDownGlobal = (e: KeyboardEvent) => {
+      if (shortcutsDisabledRef.current) return;
       if ((e.key === 'Control' || e.key === 'Meta') && orbitControlsRef.current) {
         orbitControlsRef.current.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
       }
     };
 
     const handleKeyUpGlobal = (e: KeyboardEvent) => {
+      if (shortcutsDisabledRef.current) return;
       if ((e.key === 'Control' || e.key === 'Meta') && orbitControlsRef.current) {
         orbitControlsRef.current.mouseButtons.RIGHT = THREE.MOUSE.PAN;
       }

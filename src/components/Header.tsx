@@ -12,6 +12,7 @@ import {
   Eye,
   Activity,
   Maximize2,
+  Settings,
 } from 'lucide-react';
 import { ViewportRenderMode, CloudSession } from '../types';
 
@@ -30,6 +31,8 @@ interface HeaderProps {
   onUndo: () => void;
   onRedo: () => void;
   cloudSession: CloudSession;
+  onOpenSettings: () => void;
+  settingsButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -47,6 +50,8 @@ export const Header: React.FC<HeaderProps> = ({
   onUndo,
   onRedo,
   cloudSession,
+  onOpenSettings,
+  settingsButtonRef,
 }) => {
   const activeCollabCount = cloudSession.collaborators.filter((c) => c.active).length;
 
@@ -187,6 +192,15 @@ export const Header: React.FC<HeaderProps> = ({
           title="Keyboard Shortcuts"
         >
           <HelpCircle className="w-3.5 h-3.5" />
+        </button>
+        <button
+          ref={settingsButtonRef}
+          onClick={onOpenSettings}
+          className="p-2 rounded-lg bg-slate-800/80 hover:bg-slate-800 text-slate-400 hover:text-slate-200 border border-slate-700/60 transition-colors"
+          title="Account and settings"
+          aria-label="Open account and settings"
+        >
+          <Settings className="w-3.5 h-3.5" />
         </button>
       </div>
     </header>

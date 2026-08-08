@@ -2,12 +2,18 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import { createApiRouter } from './server/api';
+import { openDatabase } from './server/database';
+import { configureNetworkPolicy, getServerBinding } from './server/network';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const binding = getServerBinding();
+  configureNetworkPolicy(app);
 
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: "2mb", type: 'application/json' }));
+  const db = openDatabase();
+  app.use('/api', createApiRouter(db));
 
   // Initialize Gemini AI (server-side only)
   const apiKey = process.env.GEMINI_API_KEY;
@@ -130,8 +136,8 @@ Available material presets: "gold", "smoked_glass", "walnut", "concrete", "brush
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`3D Design Studio server running on port ${PORT}`);
+  app.listen(binding.port, binding.host, () => {
+    console.log(`3D Design Studio server running at ${binding.host}:${binding.port}`);
   });
 }
 

@@ -12,6 +12,7 @@ import {
 import {
   getInitialProject,
   saveProjectToStorage,
+  loadSavedProjects,
   getInitialCloudSession,
   generateRoomCode,
 } from './utils/storage';
@@ -25,6 +26,15 @@ import { ExportModal } from './components/ExportModal';
 import { AICopilotModal } from './components/AICopilotModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { ShortcutsModal } from './components/ShortcutsModal';
+import { SettingsModal } from './components/SettingsModal';
+import {
+  accountApi,
+  getGuestPreferences,
+  saveGuestPreferences,
+  type AccountPreferences,
+  type AccountUser,
+} from './utils/accountApi';
+import { createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange } from './utils/accountState';
 
 export default function App() {
   // Main Project State
@@ -53,6 +63,71 @@ export default function App() {
   const [aiCopilotOpen, setAiCopilotOpen] = useState(false);
   const [cloudSyncOpen, setCloudSyncOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+  const [preferences, setPreferences] = useState<AccountPreferences>(getGuestPreferences);
+  const [cloudProjects, setCloudProjects] = useState<ProjectData[]>([]);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const accountUserRef = useRef<AccountUser | null>(null);
+  const authSessionRef = useRef(0);
+  const autosaveRunnerRef = useRef(createLatestAsyncRunner<{ project: ProjectData; userId: string; session: number }>(async (pending, signal) => {
+    if (pending.session !== authSessionRef.current || pending.userId !== accountUserRef.current?.id) return;
+    const result = await accountApi.saveProject(pending.project, signal);
+    if (signal.aborted || pending.session !== authSessionRef.current || pending.userId !== accountUserRef.current?.id) return;
+    setCloudProjects(current => current.map(saved => saved.id === result.project.id ? result.project : saved));
+  }));
+  const preferenceQueueRef = useRef(createPreferenceUpdateQueue(
+    preferences,
+    async desired => persistPreferenceChange(desired, desired, accountUserRef.current, accountApi.preferences, saveGuestPreferences),
+    setPreferences,
+  ));
+  const beginAccountSession = useCallback((user: AccountUser | null, nextPreferences: AccountPreferences) => {
+    authSessionRef.current += 1;
+    autosaveRunnerRef.current.reset();
+    accountUserRef.current = user;
+    setAccountUser(user);
+    preferenceQueueRef.current.reset(nextPreferences);
+  }, []);
+  const currentProjectStored = cloudProjects.some(saved => saved.id === project.id);
+
+  const accountAction = useCallback(async (action: () => Promise<void>) => {
+    setAccountBusy(true); setAccountError(null); setAccountNotice(null);
+    try { await action(); } catch (error) { setAccountError(error instanceof Error ? error.message : 'Something went wrong.'); }
+    finally { setAccountBusy(false); }
+  }, []);
+
+  const refreshCloudProjects = useCallback(async () => {
+    const result = await accountApi.projects();
+    setCloudProjects(result.projects);
+  }, []);
+
+  useEffect(() => {
+    void accountApi.session().then(session => {
+      if (session.authenticated && session.user && session.preferences) {
+        beginAccountSession(session.user, session.preferences);
+        void refreshCloudProjects().catch(() => setAccountError('Could not load cloud designs.'));
+      }
+    }).catch(() => setAccountError('Account services are unavailable. Guest designs still work.'));
+  }, [beginAccountSession, refreshCloudProjects]);
+
+  useEffect(() => {
+    document.documentElement.dataset.appTheme = preferences.theme;
+    document.documentElement.dataset.reducedMotion = String(preferences.reducedMotion);
+  }, [preferences.theme, preferences.reducedMotion]);
+
+  useEffect(() => {
+    if (!accountUser || !preferences.autosave || !currentProjectStored) return;
+    const timer = window.setTimeout(() => {
+      void autosaveRunnerRef.current({ project, userId: accountUser.id, session: authSessionRef.current }).catch(error => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) setAccountError('Cloud autosave failed. Your local design is safe.');
+      });
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [project, accountUser, preferences.autosave, currentProjectStored, refreshCloudProjects]);
 
   // Save changes to localStorage & update history stack
   const pushStateToHistory = useCallback(
@@ -195,6 +270,7 @@ export default function App() {
 
   // Delete Object
   const handleDeleteObject = (id: string) => {
+    if (preferences.confirmDelete && !window.confirm('Delete this object?')) return;
     const updatedObjects = project.objects.filter((o) => o.id !== id);
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
@@ -261,6 +337,7 @@ export default function App() {
   // Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (settingsOpen) return;
       // Ignore if typing in an input or textarea
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
@@ -290,7 +367,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedObjectId, historyIndex, history]);
+  }, [selectedObjectId, historyIndex, history, settingsOpen]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
@@ -310,6 +387,11 @@ export default function App() {
         onUndo={handleUndo}
         onRedo={handleRedo}
         cloudSession={cloudSession}
+        onOpenSettings={() => {
+          setExportModalOpen(false); setAiCopilotOpen(false); setCloudSyncOpen(false); setShortcutsOpen(false);
+          setSettingsOpen(true);
+        }}
+        settingsButtonRef={settingsButtonRef}
       />
 
       {/* Main Studio Viewport & Sidebars */}
@@ -334,6 +416,7 @@ export default function App() {
             transformMode={transformMode}
             renderMode={renderMode}
             onRegisterRenderer={handleRegisterRenderer}
+            shortcutsDisabled={settingsOpen}
           />
         </main>
 
@@ -375,6 +458,50 @@ export default function App() {
       <ShortcutsModal
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
+      />
+
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={closeSettings}
+        returnFocusRef={settingsButtonRef}
+        user={accountUser}
+        preferences={preferences}
+        projects={cloudProjects}
+        busy={accountBusy}
+        error={accountError}
+        notice={accountNotice}
+        onAuthenticate={async (mode, username, password) => accountAction(async () => {
+          const result = mode === 'signup' ? await accountApi.signup(username, password) : await accountApi.signin(username, password);
+          beginAccountSession(result.user, result.preferences); await refreshCloudProjects();
+          setAccountNotice(mode === 'signup' ? 'Account created. Import guest designs when you are ready.' : 'Signed in. Import guest designs when you are ready.');
+        })}
+        onSignout={async () => accountAction(async () => {
+          autosaveRunnerRef.current.reset();
+          await accountApi.signout(); setCloudProjects([]);
+          const guestPreferences = getGuestPreferences(); beginAccountSession(null, guestPreferences); setAccountNotice('Signed out. You are using guest mode.');
+        })}
+        onChangeUsername={async username => accountAction(async () => {
+          const result = await accountApi.changeUsername(username); setAccountUser(result.user); setAccountNotice('Username changed.');
+        })}
+        onChangePassword={async (currentPassword, newPassword) => accountAction(async () => {
+          await accountApi.changePassword(currentPassword, newPassword); setAccountNotice('Password changed. Other sessions were signed out.');
+        })}
+        onPreferences={async next => accountAction(async () => { await preferenceQueueRef.current.update(next); })}
+        onSave={async () => accountAction(async () => {
+          await accountApi.saveProject(project); await refreshCloudProjects(); setAccountNotice('Design saved to your account.');
+        })}
+        onLoad={cloudProject => {
+          setProject(cloudProject); setHistory([cloudProject]); setHistoryIndex(0); saveProjectToStorage(cloudProject);
+          setSelectedObjectId(null); setAccountNotice(`Loaded ${cloudProject.name}.`); setSettingsOpen(false);
+        }}
+        onDelete={async cloudProject => accountAction(async () => {
+          if (preferences.confirmDelete && !window.confirm(`Delete ${cloudProject.name} from your account?`)) return;
+          await accountApi.deleteProject(cloudProject.id); await refreshCloudProjects(); setAccountNotice('Cloud design deleted.');
+        })}
+        onImportGuest={async () => accountAction(async () => {
+          const result = await accountApi.importProjects(loadSavedProjects()); await refreshCloudProjects();
+          setAccountNotice(`Imported ${result.imported.length}; skipped ${result.skipped.length} already stored.`);
+        })}
       />
     </div>
   );
