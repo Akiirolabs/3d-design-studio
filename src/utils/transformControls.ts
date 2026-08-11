@@ -1,5 +1,23 @@
 import { SceneObject } from '../types';
 
+export const TRANSFORM_SNAPS = Object.freeze({
+  translation: 0.2,
+  rotationDegrees: 15,
+  scale: 0.25,
+});
+
+interface SnappableTransformControls {
+  setTranslationSnap(value: number | null): unknown;
+  setRotationSnap(value: number | null): unknown;
+  setScaleSnap(value: number | null): unknown;
+}
+
+export function configureTransformSnapping(controls: SnappableTransformControls, enabled: boolean): void {
+  controls.setTranslationSnap(enabled ? TRANSFORM_SNAPS.translation : null);
+  controls.setRotationSnap(enabled ? TRANSFORM_SNAPS.rotationDegrees * Math.PI / 180 : null);
+  controls.setScaleSnap(enabled ? TRANSFORM_SNAPS.scale : null);
+}
+
 export interface FrameCoalescer<T> {
   schedule: (value: T) => void;
   cancel: () => void;

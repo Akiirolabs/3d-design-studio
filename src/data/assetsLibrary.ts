@@ -1,4 +1,5 @@
 import { AssetTemplate } from '../types';
+import { EXPANDED_ASSET_LIBRARY } from './expandedAssets';
 
 export const ASSET_LIBRARY: AssetTemplate[] = [
   // PRIMITIVES
@@ -252,4 +253,5 @@ export const ASSET_LIBRARY: AssetTemplate[] = [
     defaultColor: '#06b6d4',
     defaultMaterial: 'neon',
   },
+  ...EXPANDED_ASSET_LIBRARY,
 ];

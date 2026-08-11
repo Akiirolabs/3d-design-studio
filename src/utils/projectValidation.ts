@@ -1,10 +1,14 @@
 import { AssetCategory, EnvironmentSettings, EnvironmentTheme, ProjectData, SceneObject } from '../types';
+import { getAssetCategory, isValidAssetTypeCategory, LEGACY_ARCHITECTURE_TYPES } from './assetCatalog';
 
 export type ValidationResult<T> =
   | { success: true; data: T }
   | { success: false; error: string };
 
-const CATEGORIES: AssetCategory[] = ['primitives', 'architecture', 'interior', 'environment', 'lights'];
+const CATEGORIES: AssetCategory[] = [
+  'primitives', 'architecture', 'interior', 'environment', 'lights',
+  'technology', 'stationery', 'creative',
+];
 const THEMES: EnvironmentTheme[] = ['studio', 'sunset', 'midnight', 'daylight', 'warm'];
 const SHADOW_QUALITIES: EnvironmentSettings['shadowQuality'][] = ['low', 'medium', 'high', 'ultra'];
 
@@ -27,6 +31,13 @@ function validateSceneObject(value: unknown, index: number): ValidationResult<Sc
   }
   if (!isString(value.category) || !CATEGORIES.includes(value.category as AssetCategory)) {
     return { success: false, error: `Object ${index + 1} has an invalid category.` };
+  }
+  const expectedCategory = getAssetCategory(value.type as string);
+  if (!expectedCategory) {
+    return { success: false, error: `Object ${index + 1} has unsupported asset type "${value.type}".` };
+  }
+  if (!isValidAssetTypeCategory(value.type as string, value.category as AssetCategory)) {
+    return { success: false, error: `Object ${index + 1} type "${value.type}" belongs to category "${expectedCategory}", not "${value.category}".` };
   }
   for (const field of ['position', 'rotation', 'scale'] as const) {
     if (!isTuple3(value[field])) {
@@ -93,4 +104,27 @@ export function validateProjectData(value: unknown): ValidationResult<ProjectDat
   const environment = validateEnvironmentSettings(value.environment);
   if ('error' in environment) return { success: false, error: environment.error };
   return { success: true, data: value as unknown as ProjectData };
+}
+
+/**
+ * Migrates only the one known historical format: the legacy generator stored its
+ * allow-listed asset types under `architecture`, irrespective of their catalog
+ * category. The input is never mutated and all other pairs remain untouched so
+ * normal validation can reject them.
+ */
+export function normalizeLegacyProjectData(value: unknown): unknown {
+  if (!isRecord(value) || !Array.isArray(value.objects)) return value;
+  let changed = false;
+  const objects = value.objects.map((object) => {
+    if (!isRecord(object) || object.category !== 'architecture' || !isString(object.type) || !LEGACY_ARCHITECTURE_TYPES.has(object.type)) return object;
+    const category = getAssetCategory(object.type);
+    if (!category || category === object.category) return object;
+    changed = true;
+    return { ...object, category };
+  });
+  return changed ? { ...value, objects } : value;
+}
+
+export function normalizeAndValidateProjectData(value: unknown): ValidationResult<ProjectData> {
+  return validateProjectData(normalizeLegacyProjectData(value));
 }

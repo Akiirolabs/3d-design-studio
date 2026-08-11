@@ -4,7 +4,15 @@ export type ViewportRenderMode = 'shaded' | 'wireframe' | 'photoreal' | 'normals
 
 export type EnvironmentTheme = 'studio' | 'sunset' | 'midnight' | 'daylight' | 'warm';
 
-export type AssetCategory = 'primitives' | 'architecture' | 'interior' | 'environment' | 'lights';
+export type AssetCategory =
+  | 'primitives'
+  | 'architecture'
+  | 'interior'
+  | 'environment'
+  | 'lights'
+  | 'technology'
+  | 'stationery'
+  | 'creative';
 
 export interface SceneObject {
   id: string;
@@ -67,6 +75,7 @@ export interface AssetTemplate {
   defaultColor: string;
   defaultMaterial: string;
   previewSvg?: string;
+  tags?: string[];
 }
 
 export interface CloudSession {

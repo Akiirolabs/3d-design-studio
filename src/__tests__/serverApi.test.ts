@@ -4,11 +4,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApiRouter } from '../../server/api';
 import { migrateDatabase, openDatabase, type AppDatabase } from '../../server/database';
 import { configureNetworkPolicy, getServerBinding, trustLocalReverseProxy } from '../../server/network';
+import { ASSET_TYPE_CATEGORIES } from '../utils/assetCatalog';
+import { DEFAULT_ENVIRONMENT, DEFAULT_PROJECT_OBJECTS } from '../utils/storage';
 
 function project(id: string, name = id) {
   return {
     id, name, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', objects: [],
     environment: { theme: 'studio', sunElevation: 45, sunAzimuth: 120, intensity: 1, shadows: true, shadowQuality: 'high', gridVisible: true, gridSnap: false, gridStep: 1, fogDensity: 0, bloom: false, bloomIntensity: 0, ao: true, backgroundColor: '#000000' },
+  };
+}
+
+function legacyProject(id: string) {
+  return {
+    ...project(id), environment: structuredClone(DEFAULT_ENVIRONMENT),
+    objects: structuredClone(DEFAULT_PROJECT_OBJECTS).map((object) => ({ ...object, category: 'architecture' as const })),
   };
 }
 
@@ -178,6 +187,66 @@ describe('account and project API', () => {
     expect((await request('/projects/p1', { method: 'PUT', headers: { cookie }, body: JSON.stringify(project('p1')) })).status).toBe(200);
     const loaded = await request('/projects/p1', { headers: { cookie } });
     expect(await loaded.json()).toMatchObject({ project: { id: 'p1' } });
+  });
+
+  it('keeps new project writes strict while canonicalizing the legacy import boundary', async () => {
+    const { cookie } = await signup('alice');
+    const legacy = legacyProject('legacy-import');
+    expect(legacy.objects.find((object) => object.id === 'obj_floor')).toMatchObject({
+      name: 'Architectural Floor', type: 'plane', category: 'architecture',
+    });
+    expect((await request('/projects/legacy-put', { method: 'PUT', headers: { cookie }, body: JSON.stringify({ ...legacy, id: 'legacy-put' }) })).status).toBe(400);
+    const unknown = { ...project('unknown-put'), objects: [{ ...legacy.objects[0], type: 'invented-shape', category: 'architecture' }] };
+    const mismatch = { ...project('mismatch-put'), objects: [{ ...legacy.objects[0], type: 'plane', category: 'technology' }] };
+    expect((await request('/projects/unknown-put', { method: 'PUT', headers: { cookie }, body: JSON.stringify(unknown) })).status).toBe(400);
+    expect((await request('/projects/mismatch-put', { method: 'PUT', headers: { cookie }, body: JSON.stringify(mismatch) })).status).toBe(400);
+
+    const imported = await request('/projects/import', { method: 'POST', headers: { cookie }, body: JSON.stringify({ projects: [legacy] }) });
+    expect(imported.status).toBe(200);
+    expect(await imported.json()).toMatchObject({ imported: ['legacy-import'] });
+    const loaded = await request('/projects/legacy-import', { headers: { cookie } });
+    const body = await loaded.json() as { project: ReturnType<typeof legacyProject> };
+    for (const object of body.project.objects) expect(object.category).toBe(ASSET_TYPE_CATEGORIES.get(object.type));
+    expect(body.project.objects.find((object) => object.id === 'obj_floor')?.category).toBe('primitives');
+    const stored = db.prepare('SELECT data_json FROM projects WHERE id = ?').get('legacy-import') as { data_json: string };
+    for (const object of JSON.parse(stored.data_json).objects) expect(object.category).toBe(ASSET_TYPE_CATEGORIES.get(object.type));
+  });
+
+  it('canonicalizes historical database rows in project list and detail responses', async () => {
+    const { cookie } = await signup('alice');
+    const user = db.prepare('SELECT id FROM users WHERE normalized_username = ?').get('alice') as { id: string };
+    const legacy = legacyProject('legacy-row');
+    db.prepare('INSERT INTO projects (id, owner_id, data_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(legacy.id, user.id, JSON.stringify(legacy), legacy.createdAt, legacy.updatedAt);
+
+    for (const response of [await request('/projects', { headers: { cookie } }), await request('/projects/legacy-row', { headers: { cookie } })]) {
+      const body = await response.json() as { projects?: ReturnType<typeof legacyProject>[]; project?: ReturnType<typeof legacyProject> };
+      const returned = body.project ?? body.projects?.[0];
+      expect(returned).toBeDefined();
+      for (const object of returned!.objects) expect(object.category).toBe(ASSET_TYPE_CATEGORIES.get(object.type));
+    }
+  });
+
+  it('never returns corrupt or unsupported stored project data', async () => {
+    const { cookie } = await signup('alice');
+    const user = db.prepare('SELECT id FROM users WHERE normalized_username = ?').get('alice') as { id: string };
+    const insert = db.prepare('INSERT INTO projects (id, owner_id, data_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)');
+    insert.run('broken-json', user.id, '{', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    insert.run('unsupported', user.id, JSON.stringify({ ...project('unsupported'), objects: [{
+      id: 'bad-object', name: 'Bad', type: 'unknown-future-type', category: 'primitives',
+      position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1], color: '#000000',
+      materialPreset: 'matte_white', metalness: 0, roughness: 0.5, transmission: 0, visible: true, locked: false,
+    }] }), '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    insert.run('valid', user.id, JSON.stringify(project('valid')), '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+
+    const list = await request('/projects', { headers: { cookie } });
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({ projects: [project('valid')], skippedCorrupt: ['broken-json', 'unsupported'] });
+    for (const id of ['broken-json', 'unsupported']) {
+      const detail = await request(`/projects/${id}`, { headers: { cookie } });
+      expect(detail.status).toBe(422);
+      expect(await detail.json()).toEqual({ error: 'Stored project data is invalid.' });
+    }
   });
 
   it('isolates project lists, reads, updates, and deletes by owner', async () => {

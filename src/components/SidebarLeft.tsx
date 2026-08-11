@@ -12,9 +12,13 @@ import {
   Sun,
   Upload,
   Layers,
+  Cpu,
+  PencilRuler,
+  Sparkles,
 } from 'lucide-react';
 import { AssetCategory, AssetTemplate, TransformMode } from '../types';
 import { ASSET_LIBRARY } from '../data/assetsLibrary';
+import { filterAssets } from '../utils/assetCatalog';
 
 interface SidebarLeftProps {
   onAddAsset: (template: AssetTemplate) => void;
@@ -32,13 +36,7 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
   const [activeTab, setActiveTab] = useState<AssetCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filteredAssets = ASSET_LIBRARY.filter((asset) => {
-    const matchesCategory = activeTab === 'all' || asset.category === activeTab;
-    const matchesSearch =
-      asset.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      asset.description.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
+  const filteredAssets = filterAssets(ASSET_LIBRARY, activeTab, searchQuery);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -114,7 +112,7 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search shapes, architecture, lights..."
+            placeholder="Search shapes, technology, office..."
             className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-sky-500 transition-colors"
           />
         </div>
@@ -180,6 +178,36 @@ export const SidebarLeft: React.FC<SidebarLeftProps> = ({
             }`}
           >
             <Sun className="w-3 h-3" /> Lights
+          </button>
+          <button
+            onClick={() => setActiveTab('technology')}
+            className={`px-2.5 py-1 rounded-md whitespace-nowrap flex items-center gap-1 transition-colors ${
+              activeTab === 'technology'
+                ? 'bg-slate-800 text-sky-400 font-semibold border border-slate-700'
+                : 'hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Cpu className="w-3 h-3" /> Tech
+          </button>
+          <button
+            onClick={() => setActiveTab('stationery')}
+            className={`px-2.5 py-1 rounded-md whitespace-nowrap flex items-center gap-1 transition-colors ${
+              activeTab === 'stationery'
+                ? 'bg-slate-800 text-sky-400 font-semibold border border-slate-700'
+                : 'hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <PencilRuler className="w-3 h-3" /> Office
+          </button>
+          <button
+            onClick={() => setActiveTab('creative')}
+            className={`px-2.5 py-1 rounded-md whitespace-nowrap flex items-center gap-1 transition-colors ${
+              activeTab === 'creative'
+                ? 'bg-slate-800 text-sky-400 font-semibold border border-slate-700'
+                : 'hover:text-slate-200 hover:bg-slate-800/50'
+            }`}
+          >
+            <Sparkles className="w-3 h-3" /> Creative
           </button>
         </div>
       </div>

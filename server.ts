@@ -5,6 +5,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { createApiRouter } from './server/api';
 import { openDatabase } from './server/database';
 import { configureNetworkPolicy, getServerBinding } from './server/network';
+import { AI_ASSET_TYPES, normalizeGeneratedScene } from './server/generatedScene';
 
 async function startServer() {
   const app = express();
@@ -52,7 +53,7 @@ async function startServer() {
 Given a user prompt describing a 3D scene, object, or space, generate a structured layout of 3D objects with parametric positioning, scaling, rotations, colors, and PBR materials.
 Return JSON matching the requested schema. Use reasonable offsets so items form a coherent layout (e.g., table at center, chairs around table, lamps beside sofa, building blocks connected).
 
-Allowed asset types: "cube", "sphere", "cylinder", "cone", "torus", "wall", "pillar", "arch", "stair", "window", "door", "sofa", "chair", "table", "lamp", "plant", "tree", "rock", "spotlight", "pointlight".
+Allowed asset types: ${AI_ASSET_TYPES.map((type) => `"${type}"`).join(', ')}.
 
 Available material presets: "gold", "smoked_glass", "walnut", "concrete", "brushed_steel", "carbon", "neon", "marble", "terracotta", "matte_white".`;
 
@@ -113,7 +114,7 @@ Available material presets: "gold", "smoked_glass", "walnut", "concrete", "brush
         throw new Error("No response generated from Gemini AI");
       }
 
-      const parsedData = JSON.parse(text);
+      const parsedData = normalizeGeneratedScene(JSON.parse(text));
       res.json({ success: true, data: parsedData });
     } catch (error: any) {
       console.error("3D Generation error:", error);

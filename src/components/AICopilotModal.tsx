@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Sparkles, X, Loader2, Wand2, Compass, Layers } from 'lucide-react';
 import { SceneObject, EnvironmentSettings } from '../types';
 import { isEnvironmentTheme, validateSceneObjects } from '../utils/projectValidation';
+import { getAssetCategory } from '../utils/assetCatalog';
 
 interface AICopilotModalProps {
   isOpen: boolean;
@@ -48,11 +49,15 @@ export const AICopilotModal: React.FC<AICopilotModalProps> = ({
       const generatedData = resData.data;
 
       // Transform raw output to SceneObjects array
-      const newObjects: SceneObject[] = generatedData.objects.map((item: any, idx: number) => ({
+      if (!Array.isArray(generatedData.objects)) throw new Error('Generated scene objects must be an array.');
+      const newObjects: SceneObject[] = generatedData.objects.map((item: any, idx: number) => {
+        const category = typeof item?.type === 'string' ? getAssetCategory(item.type) : undefined;
+        if (!category) throw new Error(`Generated scene was invalid: object ${idx + 1} has an unsupported asset type.`);
+        return ({
         id: `ai_obj_${Date.now()}_${idx}`,
         name: item.name || `Asset ${idx + 1}`,
-        category: 'architecture',
-        type: item.type || 'cube',
+        category,
+        type: item.type,
         position: item.position || [0, 0, 0],
         rotation: item.rotation || [0, 0, 0],
         scale: item.scale || [1, 1, 1],
@@ -63,7 +68,8 @@ export const AICopilotModal: React.FC<AICopilotModalProps> = ({
         transmission: item.transmission ?? 0,
         visible: true,
         locked: false,
-      }));
+        });
+      });
 
       const validation = validateSceneObjects(newObjects);
       if ('error' in validation) {

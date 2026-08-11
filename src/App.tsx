@@ -17,7 +17,7 @@ import {
   generateRoomCode,
 } from './utils/storage';
 import { captureRenderSnapshot } from './utils/exporters';
-import { validateProjectData } from './utils/projectValidation';
+import { normalizeAndValidateProjectData } from './utils/projectValidation';
 import { Header } from './components/Header';
 import { SidebarLeft } from './components/SidebarLeft';
 import { SidebarRight } from './components/SidebarRight';
@@ -288,7 +288,7 @@ export default function App() {
   // Import JSON Project
   const handleImportProjectJSON = (jsonData: string) => {
     try {
-      const result = validateProjectData(JSON.parse(jsonData));
+      const result = normalizeAndValidateProjectData(JSON.parse(jsonData));
       if ('error' in result) {
         alert(`Could not import project: ${result.error}`);
         return;

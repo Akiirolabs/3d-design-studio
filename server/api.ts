@@ -4,7 +4,7 @@ import cookieParser from 'cookie-parser';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { rateLimit } from 'express-rate-limit';
-import { validateProjectData } from '../src/utils/projectValidation';
+import { normalizeAndValidateProjectData, validateProjectData } from '../src/utils/projectValidation';
 import type { ProjectData } from '../src/types';
 import type { AppDatabase } from './database';
 
@@ -16,6 +16,18 @@ const PASSWORD_MIN = 5;
 
 type UserRow = { id: string; username: string; normalized_username: string; password_hash: string };
 type SessionUser = { id: string; username: string; tokenHash: string };
+type StoredProjectRow = { id: string; data_json: string };
+
+export function parseStoredProject(row: StoredProjectRow): ProjectData | undefined {
+  try {
+    const parsed = JSON.parse(row.data_json);
+    const valid = normalizeAndValidateProjectData(parsed);
+    if ('error' in valid || valid.data.id !== row.id) return undefined;
+    return valid.data;
+  } catch {
+    return undefined;
+  }
+}
 
 declare global {
   namespace Express {
@@ -173,14 +185,22 @@ export function createApiRouter(db: AppDatabase): express.Router {
   }));
 
   router.get('/projects', requireAuth, (req, res) => {
-    const rows = db.prepare('SELECT data_json FROM projects WHERE owner_id = ? ORDER BY updated_at DESC, id ASC').all(req.sessionUser!.id) as { data_json: string }[];
-    res.json({ projects: rows.map(row => JSON.parse(row.data_json)) });
+    const rows = db.prepare('SELECT id, data_json FROM projects WHERE owner_id = ? ORDER BY updated_at DESC, id ASC').all(req.sessionUser!.id) as StoredProjectRow[];
+    const projects: ProjectData[] = [];
+    const skippedCorrupt: string[] = [];
+    for (const row of rows) {
+      const project = parseStoredProject(row);
+      if (project) projects.push(project); else skippedCorrupt.push(row.id);
+    }
+    res.json(skippedCorrupt.length ? { projects, skippedCorrupt } : { projects });
   });
 
   router.get('/projects/:id', requireAuth, (req, res) => {
-    const row = db.prepare('SELECT data_json FROM projects WHERE owner_id = ? AND id = ?').get(req.sessionUser!.id, req.params.id) as { data_json: string } | undefined;
+    const row = db.prepare('SELECT id, data_json FROM projects WHERE owner_id = ? AND id = ?').get(req.sessionUser!.id, req.params.id) as StoredProjectRow | undefined;
     if (!row) return res.status(404).json({ error: 'Project not found.' });
-    res.json({ project: JSON.parse(row.data_json) });
+    const project = parseStoredProject(row);
+    if (!project) return res.status(422).json({ error: 'Stored project data is invalid.' });
+    res.json({ project });
   });
 
   router.put('/projects/:id', requireAuth, (req, res) => {
@@ -207,7 +227,7 @@ export function createApiRouter(db: AppDatabase): express.Router {
     if (!Array.isArray(req.body?.projects) || req.body.projects.length > 100) return res.status(400).json({ error: 'Projects must be an array of at most 100 items.' });
     const projects: ProjectData[] = [];
     for (const candidate of req.body.projects) {
-      const valid = validateProjectData(candidate);
+      const valid = normalizeAndValidateProjectData(candidate);
       if ('error' in valid) return res.status(400).json({ error: valid.error });
       if (Buffer.byteLength(JSON.stringify(valid.data)) > MAX_PROJECT_BYTES) return res.status(413).json({ error: 'A project exceeds the 1 MB limit.' });
       projects.push(valid.data);

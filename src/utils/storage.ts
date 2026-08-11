@@ -1,5 +1,5 @@
 import { ProjectData, SceneObject, EnvironmentSettings, CloudSession } from '../types';
-import { validateProjectData } from './projectValidation';
+import { normalizeAndValidateProjectData } from './projectValidation';
 
 const STORAGE_KEY = 'aether3d_studio_current_project';
 const SAVED_PROJECTS_KEY = 'aether3d_studio_saved_projects';
@@ -27,7 +27,7 @@ export const DEFAULT_PROJECT_OBJECTS: SceneObject[] = [
   {
     id: 'obj_floor',
     name: 'Architectural Floor',
-    category: 'architecture',
+    category: 'primitives',
     type: 'plane',
     position: [0, -0.05, 0],
     rotation: [0, 0, 0],
@@ -184,8 +184,12 @@ export function getInitialProject(): ProjectData {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
-        const result = validateProjectData(JSON.parse(saved));
-        if ('data' in result) return result.data;
+        const result = normalizeAndValidateProjectData(JSON.parse(saved));
+        if ('data' in result) {
+          const canonical = JSON.stringify(result.data);
+          if (canonical !== saved) localStorage.setItem(STORAGE_KEY, canonical);
+          return result.data;
+        }
         console.error(`Invalid saved project: ${result.error}`);
       } catch (e) {
         console.error('Failed to parse saved project:', e);
@@ -206,7 +210,13 @@ export function getInitialProject(): ProjectData {
 export function saveProjectToStorage(project: ProjectData) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
-    const updated = { ...project, updatedAt: new Date().toISOString() };
+    const candidate = { ...project, updatedAt: new Date().toISOString() };
+    const normalized = normalizeAndValidateProjectData(candidate);
+    if ('error' in normalized) {
+      console.error(`Invalid project was not saved: ${normalized.error}`);
+      return;
+    }
+    const updated = normalized.data;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
     
     // Save to list of saved projects
@@ -214,8 +224,12 @@ export function saveProjectToStorage(project: ProjectData) {
     const parsedSaved: unknown = allSavedRaw ? JSON.parse(allSavedRaw) : [];
     const allSaved: ProjectData[] = Array.isArray(parsedSaved)
       ? parsedSaved.flatMap((entry) => {
-          const result = validateProjectData(entry);
-          return result.success ? [result.data] : [];
+          const result = normalizeAndValidateProjectData(entry);
+          if ('error' in result) {
+            console.error(`Invalid saved project was removed: ${result.error}`);
+            return [];
+          }
+          return [result.data];
         })
       : [];
     const index = allSaved.findIndex((p) => p.id === updated.id);
@@ -238,9 +252,15 @@ export function loadSavedProjects(): ProjectData[] {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [getInitialProject()];
     const valid = parsed.flatMap((entry) => {
-      const result = validateProjectData(entry);
-      return result.success ? [result.data] : [];
+      const result = normalizeAndValidateProjectData(entry);
+      if ('error' in result) {
+        console.error(`Invalid saved project was removed: ${result.error}`);
+        return [];
+      }
+      return [result.data];
     });
+    const canonical = JSON.stringify(valid);
+    if (canonical !== raw) localStorage.setItem(SAVED_PROJECTS_KEY, canonical);
     return valid.length > 0 ? valid : [getInitialProject()];
   } catch (e) {
     return [getInitialProject()];

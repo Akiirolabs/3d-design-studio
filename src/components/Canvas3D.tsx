@@ -10,8 +10,9 @@ import {
   ViewportRenderMode,
 } from '../types';
 import { disposeMaterials, disposeObject3DResources } from '../utils/threeResources';
-import { canTransformSelection, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
+import { canTransformSelection, configureTransformSnapping, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
 import { viewportInputPolicy } from '../utils/modalKeyboard';
+import { createExpandedAsset, isExpandedAssetType } from '../utils/expandedAssetGeometry';
 
 interface Canvas3DProps {
   objects: SceneObject[];
@@ -363,15 +364,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     }
 
     if (transformControlsRef.current) {
-      if (environment.gridSnap) {
-        transformControlsRef.current.setTranslationSnap(environment.gridStep || 1);
-        transformControlsRef.current.setRotationSnap(THREE.MathUtils.degToRad(15));
-        transformControlsRef.current.setScaleSnap(0.25);
-      } else {
-        transformControlsRef.current.setTranslationSnap(null);
-        transformControlsRef.current.setRotationSnap(null);
-        transformControlsRef.current.setScaleSnap(null);
-      }
+      configureTransformSnapping(transformControlsRef.current, environment.gridSnap);
     }
 
     rendererRef.current.shadowMap.enabled = environment.shadows;
@@ -895,10 +888,11 @@ function createProcedural3DObject(data: SceneObject, renderMode: ViewportRenderM
     }
 
     default: {
-      const geo = new THREE.BoxGeometry(1, 1, 1);
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = true;
-      group.add(mesh);
+      if (!isExpandedAssetType(data.type)) {
+        throw new Error(`Unsupported asset type: ${data.type}`);
+      }
+      const expanded = createExpandedAsset(data.type, mat);
+      group.add(...expanded.children);
       break;
     }
   }
