@@ -5,7 +5,6 @@ import {
   Sparkles,
   Download,
   Camera,
-  Share2,
   Undo2,
   Redo2,
   HelpCircle,
@@ -14,7 +13,7 @@ import {
   Maximize2,
   Settings,
 } from 'lucide-react';
-import { ViewportRenderMode, CloudSession } from '../types';
+import { ViewportRenderMode } from '../types';
 
 interface HeaderProps {
   projectName: string;
@@ -23,14 +22,12 @@ interface HeaderProps {
   onChangeRenderMode: (mode: ViewportRenderMode) => void;
   onOpenExportModal: () => void;
   onOpenAICopilot: () => void;
-  onOpenCloudSync: () => void;
   onOpenShortcuts: () => void;
   onTakeSnapshot: () => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
-  cloudSession: CloudSession;
   onOpenSettings: () => void;
   settingsButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
@@ -42,19 +39,15 @@ export const Header: React.FC<HeaderProps> = ({
   onChangeRenderMode,
   onOpenExportModal,
   onOpenAICopilot,
-  onOpenCloudSync,
   onOpenShortcuts,
   onTakeSnapshot,
   canUndo,
   canRedo,
   onUndo,
   onRedo,
-  cloudSession,
   onOpenSettings,
   settingsButtonRef,
 }) => {
-  const activeCollabCount = cloudSession.collaborators.filter((c) => c.active).length;
-
   return (
     <header className="h-14 bg-slate-900/90 backdrop-blur-md border-b border-slate-800/80 px-4 flex items-center justify-between z-30 select-none">
       {/* Left Branding & Project Title */}
@@ -153,18 +146,6 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Sparkles className="w-3.5 h-3.5 animate-pulse text-amber-300" />
           A K I I R O AI
-        </button>
-
-        {/* Cloud Sync Room Button */}
-        <button
-          onClick={onOpenCloudSync}
-          className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-800 text-slate-200 text-xs font-medium flex items-center gap-1.5 border border-slate-700/60 transition-colors"
-          title="Collaborative Cloud Syncing"
-        >
-          <Share2 className="w-3.5 h-3.5 text-sky-400" />
-          <span className="hidden md:inline">Cloud Sync</span>
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span className="text-[10px] font-mono text-slate-400">{activeCollabCount}</span>
         </button>
 
         {/* 4K Render Snapshot */}

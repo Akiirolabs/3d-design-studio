@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange } from '../utils/accountState';
+import { commitWithNonfatalRefresh, createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange, removeSnapshot, upsertCloudProject, upsertSnapshot } from '../utils/accountState';
 import type { AccountPreferences } from '../utils/accountApi';
 
 const preferences: AccountPreferences = { theme: 'dev', reducedMotion: false, confirmDelete: true, autosave: true };
@@ -106,5 +106,23 @@ describe('ordered account state', () => {
     expect(remote).not.toHaveBeenCalled();
     expect(local).toHaveBeenCalledWith({ ...preferences, reducedMotion: true });
     expect(result.reducedMotion).toBe(true);
+  });
+
+  it('keeps successful create state when the follow-up refresh fails',async()=>{
+    let snapshots:any[]=[];const snapshot={id:'s1',name:'Saved',createdAt:'2026-01-01',project:{}};
+    await commitWithNonfatalRefresh(async()=>({snapshot}),result=>{snapshots=upsertSnapshot(snapshots,result.snapshot as any);},async()=>{throw new Error('offline');});
+    await Promise.resolve();expect(snapshots.map(item=>item.id)).toEqual(['s1']);
+  });
+
+  it('immediately registers an opened working copy before a failed refresh',async()=>{
+    let projects:any[]=[];const project={id:'working-copy',name:'Copy'};
+    await commitWithNonfatalRefresh(async()=>({project}),result=>{projects=upsertCloudProject(projects,result.project as any);},async()=>{throw new Error('offline');});
+    await Promise.resolve();expect(projects).toContainEqual(project);
+  });
+
+  it('keeps a successful local deletion when reconciliation fails',async()=>{
+    let snapshots:any[]=[{id:'s1'},{id:'s2'}];
+    await commitWithNonfatalRefresh(async()=>undefined,()=>{snapshots=removeSnapshot(snapshots as any,'s1');},async()=>{throw new Error('offline');});
+    await Promise.resolve();expect(snapshots.map(item=>item.id)).toEqual(['s2']);
   });
 });

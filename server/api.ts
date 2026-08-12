@@ -17,6 +17,7 @@ const PASSWORD_MIN = 5;
 type UserRow = { id: string; username: string; normalized_username: string; password_hash: string };
 type SessionUser = { id: string; username: string; tokenHash: string };
 type StoredProjectRow = { id: string; data_json: string };
+type SnapshotRow = StoredProjectRow & { name:string; created_at:string };
 
 export function parseStoredProject(row: StoredProjectRow): ProjectData | undefined {
   try {
@@ -244,6 +245,30 @@ export function createApiRouter(db: AppDatabase): express.Router {
       }
     })();
     res.json({ imported, skipped, conflictPolicy: 'skip-existing-id' });
+  });
+
+  router.get('/snapshots',requireAuth,(req,res)=>{
+    const rows=db.prepare('SELECT id,name,data_json,created_at FROM snapshots WHERE owner_id = ? ORDER BY created_at DESC, id ASC').all(req.sessionUser!.id) as SnapshotRow[];
+    const skippedCorrupt:string[]=[];
+    const snapshots=rows.flatMap(row=>{try{const parsed=JSON.parse(row.data_json) as {id?:unknown};if(typeof parsed.id!=='string'){skippedCorrupt.push(row.id);return [];}const project=parseStoredProject({id:parsed.id,data_json:row.data_json});if(!project){skippedCorrupt.push(row.id);return [];}return [{id:row.id,name:row.name,createdAt:row.created_at,project}];}catch{skippedCorrupt.push(row.id);return [];}});
+    res.json(skippedCorrupt.length?{snapshots,skippedCorrupt}:{snapshots});
+  });
+
+  router.post('/snapshots',requireAuth,(req,res)=>{
+    const name=typeof req.body?.name==='string'?req.body.name.trim():'';
+    if(name.length<1||name.length>80)return res.status(400).json({error:'Snapshot name must be 1-80 characters.'});
+    const valid=normalizeAndValidateProjectData(req.body?.project);
+    if('error' in valid)return res.status(400).json({error:valid.error});
+    const encoded=JSON.stringify(valid.data);if(Buffer.byteLength(encoded)>MAX_PROJECT_BYTES)return res.status(413).json({error:'Snapshot exceeds the 1 MB limit.'});
+    const id=randomUUID(),createdAt=new Date().toISOString();
+    db.prepare('INSERT INTO snapshots (id,owner_id,name,data_json,created_at) VALUES (?,?,?,?,?)').run(id,req.sessionUser!.id,name,encoded,createdAt);
+    res.status(201).json({snapshot:{id,name,createdAt,project:valid.data}});
+  });
+
+  router.delete('/snapshots/:id',requireAuth,(req,res)=>{
+    const result=db.prepare('DELETE FROM snapshots WHERE owner_id = ? AND id = ?').run(req.sessionUser!.id,req.params.id);
+    if(!result.changes)return res.status(404).json({error:'Snapshot not found.'});
+    res.status(204).end();
   });
 
   router.get('/preferences', requireAuth, (req, res) => res.json({ preferences: preferencesFor(db, req.sessionUser!.id) }));

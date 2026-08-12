@@ -38,6 +38,16 @@ const migrations = [
       autosave INTEGER NOT NULL DEFAULT 1 CHECK(autosave IN (0, 1))
     );
   `,
+  `
+    CREATE TABLE snapshots (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      data_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX snapshots_owner_created_idx ON snapshots(owner_id, created_at DESC);
+  `,
 ];
 
 export function migrateDatabase(db: AppDatabase): void {

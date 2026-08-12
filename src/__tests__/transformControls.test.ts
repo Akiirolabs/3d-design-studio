@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { canTransformSelection, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
+import { canTransformSelection, createFrameCoalescer, getDragTransition, restoreRejectedTransform } from '../utils/transformControls';
 
 describe('transform control helpers', () => {
   it('coalesces live transforms to the latest value in one animation frame', () => {
@@ -74,5 +74,11 @@ describe('transform control helpers', () => {
     const transition = getDragTransition(false, false);
 
     expect(transition).toEqual({ isDragging: false, started: false, ended: false });
+  });
+
+  it('restores the visible object immediately when a committed transform is rejected',()=>{
+    const position={set:vi.fn()},rotation={set:vi.fn()},scale={set:vi.fn()},object={position,rotation,scale,updateMatrix:vi.fn(),updateMatrixWorld:vi.fn()};
+    restoreRejectedTransform(object,{position:[1,2,3],rotation:[0,90,180],scale:[2,2,2]});
+    expect(position.set).toHaveBeenCalledWith(1,2,3);expect(rotation.set).toHaveBeenCalledWith(0,Math.PI/2,Math.PI);expect(scale.set).toHaveBeenCalledWith(2,2,2);expect(object.updateMatrixWorld).toHaveBeenCalledWith(true);
   });
 });

@@ -69,3 +69,9 @@ export function getDragTransition(wasDragging: boolean, value: unknown): DragTra
     ended: wasDragging && !isDragging,
   };
 }
+
+export interface TransformSnapshot {position:[number,number,number];rotation:[number,number,number];scale:[number,number,number]}
+export interface RestorableTransformObject {position:{set:(x:number,y:number,z:number)=>unknown};rotation:{set:(x:number,y:number,z:number)=>unknown};scale:{set:(x:number,y:number,z:number)=>unknown};updateMatrix:()=>unknown;updateMatrixWorld:(force:boolean)=>unknown}
+export function restoreRejectedTransform(object:RestorableTransformObject,snapshot:TransformSnapshot):void{
+  object.position.set(...snapshot.position);object.rotation.set(...snapshot.rotation.map(value=>value*Math.PI/180) as [number,number,number]);object.scale.set(...snapshot.scale);object.updateMatrix();object.updateMatrixWorld(true);
+}

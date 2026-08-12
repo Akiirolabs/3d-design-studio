@@ -1,4 +1,5 @@
-import type { AccountPreferences, AccountUser } from './accountApi';
+import type { ProjectData } from '../types';
+import type { AccountPreferences, AccountUser, NamedSnapshot } from './accountApi';
 
 export interface LatestAsyncRunner<T> {
   (value: T): Promise<void>;
@@ -107,4 +108,13 @@ export async function persistPreferenceChange(
   }
   const result = await persistRemote(optimistic);
   return result.preferences;
+}
+
+export const upsertCloudProject=(projects:ProjectData[],project:ProjectData)=>[project,...projects.filter(item=>item.id!==project.id)];
+export const upsertSnapshot=(snapshots:NamedSnapshot[],snapshot:NamedSnapshot)=>[snapshot,...snapshots.filter(item=>item.id!==snapshot.id)].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id));
+export const removeSnapshot=(snapshots:NamedSnapshot[],id:string)=>snapshots.filter(item=>item.id!==id);
+
+/** A successful mutation is authoritative; background reconciliation may fail without undoing it. */
+export async function commitWithNonfatalRefresh<T>(commit:()=>Promise<T>,apply:(value:T)=>void,refresh:()=>Promise<unknown>):Promise<T>{
+  const value=await commit();apply(value);void refresh().catch(()=>undefined);return value;
 }

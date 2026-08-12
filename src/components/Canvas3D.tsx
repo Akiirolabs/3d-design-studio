@@ -10,7 +10,7 @@ import {
   ViewportRenderMode,
 } from '../types';
 import { disposeMaterials, disposeObject3DResources } from '../utils/threeResources';
-import { canTransformSelection, configureTransformSnapping, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
+import { canTransformSelection, configureTransformSnapping, createFrameCoalescer, getDragTransition, restoreRejectedTransform } from '../utils/transformControls';
 import { viewportInputPolicy } from '../utils/modalKeyboard';
 import { createExpandedAsset, isExpandedAssetType } from '../utils/expandedAssetGeometry';
 import { createParametricExtrusionGeometry, parametricExtrusionKey } from '../utils/parametricExtrusion';
@@ -27,7 +27,7 @@ interface Canvas3DProps {
     position: [number, number, number],
     rotation: [number, number, number],
     scale: [number, number, number]
-  ) => void;
+  ) => boolean;
   onLiveUpdateObjectTransform?: (
     id: string,
     position: [number, number, number],
@@ -163,6 +163,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       rotation: [number, number, number];
       scale: [number, number, number];
     };
+    let dragStart:TransformUpdate|null=null;
     const readTransform = (obj: THREE.Object3D): TransformUpdate | null => {
       const id = obj.userData.id;
       if (!id) return null;
@@ -206,13 +207,16 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       const transition = getDragTransition(isTransformingRef.current, event.value);
       orbitControls.enabled = !transition.isDragging;
       isTransformingRef.current = transition.isDragging;
+      if(transition.started&&transformControls.object)dragStart=readTransform(transformControls.object);
 
       if (transition.ended) {
         liveUpdates.cancel();
         const update = transformControls.object ? readTransform(transformControls.object) : null;
         if (update) {
-          onUpdateTransformRef.current(update.id, update.position, update.rotation, update.scale);
+          const accepted=onUpdateTransformRef.current(update.id, update.position, update.rotation, update.scale);
+          if(!accepted&&dragStart&&transformControls.object)restoreRejectedTransform(transformControls.object,dragStart);
         }
+        dragStart=null;
       }
     };
     transformControls.addEventListener('dragging-changed', handleDraggingChanged);

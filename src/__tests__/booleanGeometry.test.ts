@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { computeMeshVolume } from 'three-bvh-csg';
 import * as THREE from 'three';
 import type { SceneObject } from '../types';
-import { applyBooleanSubtraction, baseBooleanGeometry, booleanGeometryKey, clearBooleanGeometryCache, createSubtractedGeometry, getBooleanIssue, hasBooleanDependency, hasOppositeDirectedEdgePairs, removeBooleanSubtraction, updateTransformWithBooleanGuard } from '../utils/booleanGeometry';
+import { applyBooleanSubtraction, baseBooleanGeometry, booleanGeometryKey, clearBooleanGeometryCache, createSubtractedGeometry, getBooleanIssue, hasBooleanDependency, hasOppositeDirectedEdgePairs, removeBooleanSubtraction, updateTransformWithBooleanGuard, validateBooleanResultGeometry } from '../utils/booleanGeometry';
 import { validateSceneObjects } from '../utils/projectValidation';
 import { exportToOBJ, exportToSTL } from '../utils/exporters';
 
@@ -109,6 +109,7 @@ describe('non-destructive Boolean holes',()=>{
     for(let component=0;component<3;component++){const a=values[component];values[component]=values[3+component];values[3+component]=a;}
     geometry.computeVertexNormals();
     expect(hasOppositeDirectedEdgePairs(geometry)).toBe(false);
+    expect(()=>validateBooleanResultGeometry(geometry,2)).toThrow(/directed-edge winding/);
     geometry.dispose();
   });
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { accountApi, getGuestPreferences, saveGuestPreferences } from '../utils/accountApi';
+import { accountApi, getGuestPreferences, partitionSnapshots, saveGuestPreferences } from '../utils/accountApi';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -25,6 +25,20 @@ describe('account API client', () => {
     vi.stubGlobal('fetch', fetchMock);
     await accountApi.deleteProject('project/with spaces');
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/project%2Fwith%20spaces', expect.objectContaining({ method: 'DELETE' }));
+  });
+
+  it('creates snapshots separately from workspace autosave and encodes snapshot deletion',async()=>{
+    const fetchMock=vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({snapshot:{id:'server-id'}}),{status:201,headers:{'Content-Type':'application/json'}})).mockResolvedValueOnce(new Response(null,{status:204}));
+    vi.stubGlobal('fetch',fetchMock);const project={id:'workspace',name:'Workspace'} as any;
+    await accountApi.createSnapshot('Milestone',project);await accountApi.deleteSnapshot('snap/one');
+    expect(fetchMock).toHaveBeenNthCalledWith(1,'/api/snapshots',expect.objectContaining({method:'POST',body:JSON.stringify({name:'Milestone',project})}));
+    expect(fetchMock).toHaveBeenNthCalledWith(2,'/api/snapshots/snap%2Fone',expect.objectContaining({method:'DELETE'}));
+  });
+
+  it('partitions exactly five recent snapshots in server order',()=>{
+    const snapshots=Array.from({length:7},(_,index)=>({id:String(index),name:String(index),createdAt:String(index),project:{} as any}));
+    expect(partitionSnapshots(snapshots).recent.map(item=>item.id)).toEqual(['0','1','2','3','4']);
+    expect(partitionSnapshots(snapshots).older.map(item=>item.id)).toEqual(['5','6']);
   });
 });
 

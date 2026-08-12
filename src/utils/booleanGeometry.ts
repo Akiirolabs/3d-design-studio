@@ -93,6 +93,7 @@ export function validateBooleanResultGeometry(geometry:THREE.BufferGeometry,sour
   const vertexKey=(v:THREE.Vector3)=>`${Math.round(v.x*1e6)},${Math.round(v.y*1e6)},${Math.round(v.z*1e6)}`;
   const addEdge=(v1:THREE.Vector3,v2:THREE.Vector3)=>{const x=vertexKey(v1),y=vertexKey(v2),forward=x<y,key=forward?`${x}|${y}`:`${y}|${x}`,found=edges.get(key);if(found)found.directions.push(forward?1:-1);else edges.set(key,{directions:[forward?1:-1],a:(forward?v1:v2).clone(),b:(forward?v2:v1).clone()});};
   for(let i=0;i<position.count;i+=3){a.fromBufferAttribute(position,i);b.fromBufferAttribute(position,i+1);c.fromBufferAttribute(position,i+2);if(edge1.subVectors(b,a).cross(edge2.subVectors(c,a)).lengthSq()<1e-18)throw new Error('Subtraction produced degenerate triangles.');addEdge(a,b);addEdge(b,c);addEdge(c,a);}
+  if([...edges.values()].some(edge=>edge.directions.length===2&&edge.directions[0]===edge.directions[1]))throw new Error('Subtraction produced inconsistent directed-edge winding.');
   const invalid=[...edges.values()].filter(edge=>edge.directions.length!==2);
   // CSG triangulation may express one geometric edge as several collinear
   // segments. Split-equivalent boundary coverage is still a paired manifold.

@@ -1,4 +1,4 @@
-import { ProjectData, SceneObject, EnvironmentSettings, CloudSession } from '../types';
+import { ProjectData, SceneObject, EnvironmentSettings } from '../types';
 import { normalizeAndValidateProjectData } from './projectValidation';
 
 const STORAGE_KEY = 'aether3d_studio_current_project';
@@ -265,31 +265,4 @@ export function loadSavedProjects(): ProjectData[] {
   } catch (e) {
     return [getInitialProject()];
   }
-}
-
-export function generateRoomCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-}
-
-export function getInitialCloudSession(roomCode: string, projectName: string): CloudSession {
-  return {
-    roomCode,
-    projectName,
-    updatedAt: new Date().toISOString(),
-    collaborators: [
-      { id: 'usr_me', name: 'You (Lead Architect)', avatarColor: '#3b82f6', active: true },
-      { id: 'usr_2', name: 'Sarah (Lighting Designer)', avatarColor: '#10b981', active: true },
-      { id: 'usr_3', name: 'Alex (3D Sculptor)', avatarColor: '#f59e0b', active: false },
-    ],
-    history: [
-      { id: 'h1', timestamp: 'Just now', description: 'Real-time Cloud Sync session established' },
-      { id: 'h2', timestamp: '2 mins ago', description: 'Updated PBR material parameters on Carrara Column' },
-      { id: 'h3', timestamp: '5 mins ago', description: 'AI Copilot generated Modern Pavilion base layout' },
-    ],
-  };
 }

@@ -92,7 +92,7 @@ describe('account and project API', () => {
   it('runs migrations idempotently', () => {
     migrateDatabase(db);
     migrateDatabase(db);
-    expect((db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number }).count).toBe(1);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number }).count).toBe(2);
   });
 
   it('supports signup, session, signout, and normalized username uniqueness', async () => {
@@ -322,6 +322,43 @@ describe('account and project API', () => {
     const imported = await request('/projects/import', { method: 'POST', headers: { cookie }, body: JSON.stringify({ projects: [project('p1', 'guest'), project('p2')] }) });
     expect(await imported.json()).toEqual({ imported: ['p2'], skipped: ['p1'], conflictPolicy: 'skip-existing-id' });
     expect(await (await request('/projects/p1', { headers: { cookie } })).json()).toMatchObject({ project: { name: 'saved' } });
+  });
+
+  it('creates immutable owner-scoped named snapshots and deletes only by owner',async()=>{
+    const alice=await signup('alice'),bob=await signup('bob-user');
+    const created=await request('/snapshots',{method:'POST',headers:{cookie:alice.cookie},body:JSON.stringify({name:'Before enclosure',project:project('workspace')})});
+    expect(created.status).toBe(201);const snapshot=(await created.json()).snapshot;
+    expect(snapshot).toMatchObject({name:'Before enclosure',project:{id:'workspace'}});expect(snapshot.id).not.toBe('workspace');
+    await request('/projects/workspace',{method:'PUT',headers:{cookie:alice.cookie},body:JSON.stringify(project('workspace','Changed workspace'))});
+    expect((await (await request('/snapshots',{headers:{cookie:alice.cookie}})).json()).snapshots[0].project.name).toBe('workspace');
+    expect((await request(`/snapshots/${snapshot.id}`,{method:'DELETE',headers:{cookie:bob.cookie}})).status).toBe(404);
+    expect((await request(`/snapshots/${snapshot.id}`,{method:'DELETE',headers:{cookie:alice.cookie}})).status).toBe(204);
+  });
+
+  it('requires authentication and validates snapshot names',async()=>{
+    expect((await request('/snapshots',{method:'POST',body:JSON.stringify({name:'guest',project:project('p')})})).status).toBe(401);
+    const {cookie}=await signup('alice');
+    expect((await request('/snapshots',{method:'POST',headers:{cookie},body:JSON.stringify({name:'   ',project:project('p')})})).status).toBe(400);
+    expect((await request('/snapshots',{method:'POST',headers:{cookie},body:JSON.stringify({name:'x'.repeat(81),project:project('p')})})).status).toBe(400);
+  });
+
+  it('allows same-name snapshots as distinct immutable records and reports corrupt rows',async()=>{
+    const {cookie}=await signup('alice');
+    const ids:string[]=[];for(let index=0;index<2;index++){const response=await request('/snapshots',{method:'POST',headers:{cookie},body:JSON.stringify({name:'Milestone',project:project(`p${index}`)})});ids.push((await response.json()).snapshot.id);}
+    expect(new Set(ids).size).toBe(2);
+    const user=db.prepare('SELECT id FROM users WHERE normalized_username = ?').get('alice') as {id:string};
+    db.prepare('INSERT INTO snapshots (id,owner_id,name,data_json,created_at) VALUES (?,?,?,?,?)').run('corrupt',user.id,'Broken','{','2026-01-02T00:00:00.000Z');
+    const listed=await (await request('/snapshots',{headers:{cookie}})).json();expect(listed.snapshots).toHaveLength(2);expect(listed.skippedCorrupt).toEqual(['corrupt']);
+  });
+
+  it('persists an opened snapshot working copy so later autosave updates it',async()=>{
+    const {cookie}=await signup('alice');
+    const created=await request('/snapshots',{method:'POST',headers:{cookie},body:JSON.stringify({name:'Base',project:project('source')})});const snapshot=(await created.json()).snapshot;
+    const copy=project('working-copy',`${snapshot.name} Working Copy`);
+    expect((await request('/projects/working-copy',{method:'PUT',headers:{cookie},body:JSON.stringify(copy)})).status).toBe(200);
+    expect((await request('/projects/working-copy',{method:'PUT',headers:{cookie},body:JSON.stringify({...copy,name:'Autosaved change'})})).status).toBe(200);
+    expect(await (await request('/projects/working-copy',{headers:{cookie}})).json()).toMatchObject({project:{name:'Autosaved change'}});
+    expect((await (await request('/snapshots',{headers:{cookie}})).json()).snapshots[0].project.name).toBe('source');
   });
 
   it('reads and validates preference updates', async () => {

@@ -93,24 +93,6 @@ export interface AssetTemplate {
   tags?: string[];
 }
 
-export interface CloudSession {
-  roomCode: string;
-  projectName: string;
-  updatedAt: string;
-  collaborators: {
-    id: string;
-    name: string;
-    avatarColor: string;
-    active: boolean;
-    activeObjectId?: string;
-  }[];
-  history: {
-    id: string;
-    timestamp: string;
-    description: string;
-  }[];
-}
-
 export interface ProjectData {
   id: string;
   name: string;

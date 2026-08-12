@@ -7,14 +7,11 @@ import {
   TransformMode,
   ViewportRenderMode,
   AssetTemplate,
-  CloudSession,
 } from './types';
 import {
   getInitialProject,
   saveProjectToStorage,
   loadSavedProjects,
-  getInitialCloudSession,
-  generateRoomCode,
 } from './utils/storage';
 import { captureRenderSnapshot } from './utils/exporters';
 import { canPersistProject, objectsWithPreview } from './utils/projectPreview';
@@ -23,8 +20,8 @@ import { Header } from './components/Header';
 import { SidebarLeft } from './components/SidebarLeft';
 import { SidebarRight } from './components/SidebarRight';
 import { Canvas3D } from './components/Canvas3D';
-import { ExportModal } from './components/ExportModal';CopilotModal } from './components/AICopilotModal';
-import { CloudSyncModal } from './components/CloudSyncModal';
+import { ExportModal } from './components/ExportModal';
+import { AICopilotModal } from './components/AICopilotModal';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { SettingsModal } from './components/SettingsModal';
 import {
@@ -33,8 +30,9 @@ import {
   saveGuestPreferences,
   type AccountPreferences,
   type AccountUser,
+  type NamedSnapshot,
 } from './utils/accountApi';
-import { createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange } from './utils/accountState';
+import { commitWithNonfatalRefresh, createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange, removeSnapshot, upsertCloudProject, upsertSnapshot } from './utils/accountState';
 import { alignSelectedObjectPivots, getAlignmentIssue, reconcileSelection, resolvePrimaryActionId, selectObject, type SelectionState } from './utils/multiSelection';
 import { applyBooleanSubtraction, hasBooleanDependency, removeBooleanSubtraction, updateTransformWithBooleanGuard } from './utils/booleanGeometry';
 
@@ -54,11 +52,6 @@ export default function App() {
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
   const [renderMode, setRenderMode] = useState<ViewportRenderMode>('shaded');
 
-  // Cloud Sync Session
-  const [cloudSession, setCloudSession] = useState<CloudSession>(() =>
-    getInitialCloudSession(generateRoomCode(), project.name)
-  );
-
   // Three.js References for Exporting & Snapshots
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -66,12 +59,13 @@ export default function App() {
   // Modal Visibility
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [aiCopilotOpen, setAiCopilotOpen] = useState(false);
-  const [cloudSyncOpen, setCloudSyncOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [preferences, setPreferences] = useState<AccountPreferences>(getGuestPreferences);
   const [cloudProjects, setCloudProjects] = useState<ProjectData[]>([]);
+  const [snapshots,setSnapshots]=useState<NamedSnapshot[]>([]);
+  const [snapshotsLoading,setSnapshotsLoading]=useState(false);const [snapshotCorruptCount,setSnapshotCorruptCount]=useState(0);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
@@ -137,8 +131,9 @@ export default function App() {
   }, []);
 
   const refreshCloudProjects = useCallback(async () => {
-    const result = await accountApi.projects();
-    setCloudProjects(result.projects);
+    setSnapshotsLoading(true);
+    try{const [projectsResult,snapshotsResult]=await Promise.all([accountApi.projects(),accountApi.snapshots()]);
+    setCloudProjects(projectsResult.projects);setSnapshots(snapshotsResult.snapshots);setSnapshotCorruptCount(snapshotsResult.skippedCorrupt?.length??0);}finally{setSnapshotsLoading(false);}
   }, []);
 
   useEffect(() => {
@@ -305,10 +300,12 @@ export default function App() {
       if(result.error){
         setProject(project);
         setModelingNotice(result.error);
-        return;
+        return false;
       }
       pushStateToHistory({ ...project, objects: result.objects });
+      return true;
     }
+    return false;
   };
 
   // Duplicate Object
@@ -449,16 +446,14 @@ export default function App() {
         onChangeRenderMode={setRenderMode}
         onOpenExportModal={() => setExportModalOpen(true)}
         onOpenAICopilot={() => setAiCopilotOpen(true)}
-        onOpenCloudSync={() => setCloudSyncOpen(true)}
         onOpenShortcuts={() => setShortcutsOpen(true)}
         onTakeSnapshot={handleTakeSnapshot}
         canUndo={historyIndex > 0}
         canRedo={historyIndex < history.length - 1}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        cloudSession={cloudSession}
         onOpenSettings={() => {
-          setExportModalOpen(false); setAiCopilotOpen(false); setCloudSyncOpen(false); setShortcutsOpen(false);
+          setExportModalOpen(false); setAiCopilotOpen(false); setShortcutsOpen(false);
           setSettingsOpen(true);
         }}
         settingsButtonRef={settingsButtonRef}
@@ -525,14 +520,6 @@ export default function App() {
         onApplyGeneratedScene={handleApplyAIScene}
       />
 
-      <CloudSyncModal
-        isOpen={cloudSyncOpen}
-        onClose={() => setCloudSyncOpen(false)}
-        cloudSession={cloudSession}
-        onUpdateCloudSession={setCloudSession}
-        project={project}
-      />
-
       <ShortcutsModal
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
@@ -544,7 +531,10 @@ export default function App() {
         returnFocusRef={settingsButtonRef}
         user={accountUser}
         preferences={preferences}
-        projects={cloudProjects}
+        snapshots={snapshots}
+        snapshotsLoading={snapshotsLoading}
+        snapshotCorruptCount={snapshotCorruptCount}
+        currentProjectName={project.name}
         busy={accountBusy}
         error={accountError}
         notice={accountNotice}
@@ -555,7 +545,7 @@ export default function App() {
         })}
         onSignout={async () => accountAction(async () => {
           autosaveRunnerRef.current.reset();
-          await accountApi.signout(); setCloudProjects([]);
+          await accountApi.signout(); setCloudProjects([]);setSnapshots([]);
           const guestPreferences = getGuestPreferences(); beginAccountSession(null, guestPreferences); setAccountNotice('Signed out. You are using guest mode.');
         })}
         onChangeUsername={async username => accountAction(async () => {
@@ -565,21 +555,18 @@ export default function App() {
           await accountApi.changePassword(currentPassword, newPassword); setAccountNotice('Password changed. Other sessions were signed out.');
         })}
         onPreferences={async next => accountAction(async () => { await preferenceQueueRef.current.update(next); })}
-        onSave={async () => accountAction(async () => {
-          await accountApi.saveProject(project); await refreshCloudProjects(); setAccountNotice('Design saved to your account.');
-        })}
-        onLoad={cloudProject => {
-          setProject(cloudProject); setHistory([cloudProject]); setHistoryIndex(0); saveProjectToStorage(cloudProject);
-          setSelection(current => reconcileSelection(cloudProject.objects, current, true)); setAccountNotice(`Loaded ${cloudProject.name}.`); setSettingsOpen(false);
-        }}
-        onDelete={async cloudProject => accountAction(async () => {
-          if (preferences.confirmDelete && !window.confirm(`Delete ${cloudProject.name} from your account?`)) return;
-          await accountApi.deleteProject(cloudProject.id); await refreshCloudProjects(); setAccountNotice('Cloud design deleted.');
-        })}
         onImportGuest={async () => accountAction(async () => {
           const result = await accountApi.importProjects(loadSavedProjects()); await refreshCloudProjects();
           setAccountNotice(`Imported ${result.imported.length}; skipped ${result.skipped.length} already stored.`);
         })}
+        onCreateSnapshot={async name=>{setAccountBusy(true);setAccountError(null);setAccountNotice(null);try{await commitWithNonfatalRefresh(()=>accountApi.createSnapshot(name,project),result=>setSnapshots(current=>upsertSnapshot(current,result.snapshot)),refreshCloudProjects);setAccountNotice('Named snapshot created.');return true;}catch(error){setAccountError(error instanceof Error?error.message:'Could not create snapshot.');return false;}finally{setAccountBusy(false);}}}
+        onOpenSnapshot={async snapshot=>accountAction(async()=>{
+          const now=new Date().toISOString();
+          const workingCopy={...structuredClone(snapshot.project),id:`workspace_${crypto.randomUUID()}`,name:`${snapshot.name} Working Copy`,createdAt:now,updatedAt:now};
+          await commitWithNonfatalRefresh(()=>accountApi.saveProject(workingCopy),result=>setCloudProjects(current=>upsertCloudProject(current,result.project)),refreshCloudProjects);
+          setProject(workingCopy);setHistory([workingCopy]);setHistoryIndex(0);saveProjectToStorage(workingCopy);setSelection(current=>reconcileSelection(workingCopy.objects,current,true));setAccountNotice(`Opened ${snapshot.name} as a new workspace.`);setSettingsOpen(false);
+        })}
+        onDeleteSnapshot={async snapshot=>accountAction(async()=>{if(preferences.confirmDelete&&!window.confirm(`Delete snapshot ${snapshot.name}?`))return;await commitWithNonfatalRefresh(()=>accountApi.deleteSnapshot(snapshot.id),()=>setSnapshots(current=>removeSnapshot(current,snapshot.id)),refreshCloudProjects);setAccountNotice('Snapshot deleted.');})}
       />
     </div>
   );
