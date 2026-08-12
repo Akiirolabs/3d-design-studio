@@ -44,5 +44,5 @@ Verify each action preserves unrelated object transforms and creates the intende
 
 - Diff contains no unrelated edits, secrets, generated artifacts, or debug logging.
 - Tests were not weakened to obtain a pass.
-- No critical or high DevMind finding remains confirmed.
-- DevMind reviews the final diff after the last DevBase edit.
+- No critical or high DevSync finding remains confirmed.
+- DevSync reviews the final diff and intent contract after the last DevBase edit.

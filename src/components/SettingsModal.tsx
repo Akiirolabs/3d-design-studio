@@ -1,21 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, UserRound, Database, Palette, LoaderCircle, UsersRound } from 'lucide-react';
-import type { AccountPreferences, AccountUser, NamedSnapshot } from '../utils/accountApi';
-import { partitionSnapshots } from '../utils/accountApi';
+import { X, UserRound, Palette, LoaderCircle } from 'lucide-react';
+import type { AccountPreferences, AccountUser } from '../utils/accountApi';
 import { focusTrapTarget } from '../utils/modalKeyboard';
 
 interface Props {
   isOpen: boolean; onClose: () => void;
   user: AccountUser | null; preferences: AccountPreferences;
-  snapshots:NamedSnapshot[];
-  snapshotsLoading:boolean;snapshotCorruptCount:number;currentProjectName:string;
   busy: boolean; error: string | null; notice: string | null;
   onAuthenticate: (mode: 'signin' | 'signup', username: string, password: string) => Promise<void>;
   onSignout: () => Promise<void>; onChangeUsername: (username: string) => Promise<void>;
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   onPreferences: (next: Partial<AccountPreferences>) => Promise<void>;onImportGuest: () => Promise<void>;
-  onCreateSnapshot:(name:string)=>Promise<boolean>;onOpenSnapshot:(snapshot:NamedSnapshot)=>Promise<void>;onDeleteSnapshot:(snapshot:NamedSnapshot)=>Promise<void>;
   returnFocusRef: React.RefObject<HTMLButtonElement | null>;
+  cloudSection:React.ReactNode;
 }
 
 const field = 'min-w-0 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500';
@@ -25,12 +22,9 @@ export const SettingsModal: React.FC<Props> = (props) => {
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
   const [username, setUsername] = useState(''); const [password, setPassword] = useState('');
   const [currentPassword, setCurrentPassword] = useState(''); const [newPassword, setNewPassword] = useState('');
-  const [snapshotName,setSnapshotName]=useState('');
-  const [saveOpen,setSaveOpen]=useState(false);const [snapshotNameError,setSnapshotNameError]=useState<string|null>(null);const snapshotNameRef=useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null); const closeRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => { if (!props.isOpen) { setPassword(''); setCurrentPassword(''); setNewPassword(''); setSaveOpen(false); setSnapshotNameError(null); } }, [props.isOpen]);
-  useEffect(()=>{if(saveOpen)requestAnimationFrame(()=>snapshotNameRef.current?.focus());},[saveOpen]);
+  useEffect(() => { if (!props.isOpen) { setPassword(''); setCurrentPassword(''); setNewPassword(''); } }, [props.isOpen]);
   useEffect(() => {
     if (!props.isOpen) return;
     closeRef.current?.focus();
@@ -48,7 +42,6 @@ export const SettingsModal: React.FC<Props> = (props) => {
   }, [props.isOpen, props.onClose, props.returnFocusRef]);
 
   if (!props.isOpen) return null;
-  const {recent,older}=partitionSnapshots(props.snapshots);
   const submitAuth = async (e: React.FormEvent) => { e.preventDefault(); await props.onAuthenticate(authMode, username, password); setPassword(''); };
   return <div data-testid="settings-backdrop" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
     <section data-testid="settings-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="settings-title" className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 text-slate-100 shadow-2xl">
@@ -73,19 +66,10 @@ export const SettingsModal: React.FC<Props> = (props) => {
         <section className="space-y-3"><h3 className="flex items-center gap-2 text-sm font-semibold"><Palette className="h-4 w-4 text-violet-400" />Appearance &amp; behavior</h3>
           <div className="grid gap-3 rounded-xl bg-slate-950/60 p-4 sm:grid-cols-2">
             <label className="text-xs text-slate-400">Theme<select disabled={props.busy} aria-label="Application theme" className={`${field} mt-1`} value={props.preferences.theme} onChange={e => void props.onPreferences({ theme: e.target.value as AccountPreferences['theme'] })}><option value="dev">Dev (original)</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
-            {(['autosave', 'confirmDelete', 'reducedMotion'] as const).map(key => <label key={key} className="flex items-center gap-2 text-sm"><input disabled={props.busy} type="checkbox" checked={props.preferences[key]} onChange={e => void props.onPreferences({ [key]: e.target.checked })} />{{ autosave: 'Autosave cloud designs', confirmDelete: 'Confirm before deleting', reducedMotion: 'Reduce motion' }[key]}</label>)}
+            {(['confirmDelete', 'reducedMotion'] as const).map(key => <label key={key} className="flex items-center gap-2 text-sm"><input disabled={props.busy} type="checkbox" checked={props.preferences[key]} onChange={e => void props.onPreferences({ [key]: e.target.checked })} />{{ confirmDelete: 'Confirm before deleting', reducedMotion: 'Reduce motion' }[key]}</label>)}
           </div>
         </section>
-        <section className="space-y-3"><h3 className="flex items-center gap-2 text-sm font-semibold"><Database className="h-4 w-4 text-emerald-400" />Workspace &amp; snapshots</h3>
-        {!props.user?<div className="rounded-xl bg-slate-950/60 p-4 text-sm text-slate-400">Sign in or create an account above to create named cloud snapshots. Your working design and local recovery remain stored on this device.</div>:<>
-          <p className="text-xs text-slate-400">Your workspace autosaves continuously. Save creates an immutable named restore point.</p>
-          <div className="flex flex-wrap gap-2"><button disabled={props.busy} onClick={()=>{setSnapshotName(props.currentProjectName);setSnapshotNameError(null);setSaveOpen(true);}} className={button}>Save snapshot</button><button disabled={props.busy} onClick={props.onImportGuest} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-50">Import guest designs</button></div>
-          {saveOpen&&<form aria-label="Name snapshot" className="rounded-xl border border-slate-700 p-3" onSubmit={async e=>{e.preventDefault();const trimmed=snapshotName.trim();if(trimmed.length<1||trimmed.length>80){setSnapshotNameError('Snapshot name must be 1-80 characters.');snapshotNameRef.current?.focus();return;}const saved=await props.onCreateSnapshot(trimmed);if(saved){setSnapshotName('');setSnapshotNameError(null);setSaveOpen(false);}else snapshotNameRef.current?.focus();}}><label className="text-xs text-slate-400">Snapshot name<input ref={snapshotNameRef} aria-invalid={Boolean(snapshotNameError)} aria-describedby={snapshotNameError?'snapshot-name-error':undefined} maxLength={80} value={snapshotName} onChange={e=>setSnapshotName(e.target.value)} className={`${field} mt-1`}/></label>{snapshotNameError&&<p id="snapshot-name-error" role="alert" className="mt-1 text-xs text-red-300">{snapshotNameError}</p>}<div className="mt-2 flex flex-wrap gap-2"><button disabled={props.busy} className={button}>Confirm save</button><button type="button" disabled={props.busy} onClick={()=>{setSaveOpen(false);setSnapshotNameError(null);}} className="rounded-lg border border-slate-700 px-3 py-2 text-sm disabled:opacity-50">Cancel</button></div></form>}
-          {props.snapshotsLoading?<p role="status" className="text-sm text-slate-400">Loading snapshots…</p>:<div className="space-y-2"><p className="text-xs font-semibold text-slate-300">Recent snapshots</p>{recent.length===0?<p className="text-sm text-slate-400">No snapshots yet.</p>:recent.map(snapshot=><div key={snapshot.id} className="flex min-w-0 flex-col gap-2 rounded-lg border border-slate-800 p-3 sm:flex-row sm:items-center sm:justify-between"><div className="min-w-0"><p className="break-words text-sm font-medium sm:truncate">{snapshot.name}</p><p className="text-xs text-slate-500">{new Date(snapshot.createdAt).toLocaleString()}</p></div><div className="flex min-w-0 flex-wrap gap-2"><button disabled={props.busy} onClick={()=>void props.onOpenSnapshot(snapshot)} className="break-words text-left text-xs text-sky-300 disabled:opacity-40">Open as new workspace</button><button disabled={props.busy} onClick={()=>void props.onDeleteSnapshot(snapshot)} className="text-xs text-red-300 disabled:opacity-40">Delete</button></div></div>)}</div>}
-          {props.snapshotCorruptCount>0&&<p role="alert" className="text-xs text-amber-300">{props.snapshotCorruptCount} corrupt snapshot{props.snapshotCorruptCount===1?' was':'s were'} skipped.</p>}
-          {older.length>0&&<details className="rounded-lg border border-slate-800 p-3"><summary className="cursor-pointer break-words text-sm">Cloud Sync — older snapshots ({older.length})</summary><div className="mt-3 space-y-2">{older.map(snapshot=><div key={snapshot.id} className="flex min-w-0 flex-col gap-2 text-sm sm:flex-row sm:justify-between"><span className="break-words sm:truncate">{snapshot.name}</span><span className="flex flex-wrap gap-2"><button disabled={props.busy} onClick={()=>void props.onOpenSnapshot(snapshot)} className="text-sky-300 disabled:opacity-40">Open</button><button disabled={props.busy} onClick={()=>void props.onDeleteSnapshot(snapshot)} className="text-red-300 disabled:opacity-40">Delete</button></span></div>)}</div></details>}
-        </>}</section>
-        <section className="space-y-2"><h3 className="flex items-center gap-2 text-sm font-semibold"><UsersRound className="h-4 w-4 text-sky-400"/>Collaboration <span className="rounded bg-slate-800 px-2 py-0.5 text-[10px] text-slate-400">Coming soon</span></h3><p className="rounded-xl bg-slate-950/60 p-4 text-sm text-slate-400">Shared rooms and live collaborators are not available yet.</p></section>
+        {props.cloudSection}
         {props.busy && <p className="flex items-center gap-2 text-xs text-slate-400"><LoaderCircle className="h-3.5 w-3.5 animate-spin" />Working…</p>}
       </div>
     </section>

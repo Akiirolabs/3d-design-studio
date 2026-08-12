@@ -1,0 +1,4 @@
+interface:
+  display_name: "DevSync"
+  short_description: "Align user intent, design, implementation, and verification"
+  default_prompt: "Use $devsync to clarify the intended interface contract, audit the implementation, and verify every functional workflow before approval."

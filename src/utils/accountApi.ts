@@ -14,7 +14,6 @@ export interface AccountSession {
   preferences?: AccountPreferences;
 }
 export interface NamedSnapshot { id:string; name:string; createdAt:string; project:ProjectData }
-export function partitionSnapshots(snapshots:NamedSnapshot[]){return {recent:snapshots.slice(0,5),older:snapshots.slice(5)};}
 
 const DEFAULT_PREFERENCES: AccountPreferences = {
   theme: 'dev', reducedMotion: false, confirmDelete: true, autosave: true,
@@ -48,6 +47,9 @@ export const accountApi = {
   snapshots: () => request<{snapshots:NamedSnapshot[];skippedCorrupt?:string[]}>('/snapshots'),
   createSnapshot: (name:string,project:ProjectData) => request<{snapshot:NamedSnapshot}>('/snapshots',{method:'POST',body:JSON.stringify({name,project})}),
   deleteSnapshot: (id:string) => request<void>(`/snapshots/${encodeURIComponent(id)}`,{method:'DELETE'}),
+  currentWorkspace: () => request<{project:ProjectData|null;updatedAt?:string}>('/current-workspace'),
+  saveCurrentWorkspace: (project:ProjectData, signal?:AbortSignal) => request<{project:ProjectData;updatedAt:string}>('/current-workspace',{method:'PUT',body:JSON.stringify(project),signal}),
+  loadSnapshot: (id:string) => request<{project:ProjectData;updatedAt:string}>(`/snapshots/${encodeURIComponent(id)}/load`,{method:'POST'}),
 };
 
 export function getGuestPreferences(): AccountPreferences {

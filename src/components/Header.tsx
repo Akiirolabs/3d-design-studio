@@ -5,6 +5,7 @@ import {
   Sparkles,
   Download,
   Camera,
+  History,
   Undo2,
   Redo2,
   HelpCircle,
@@ -22,6 +23,7 @@ interface HeaderProps {
   onChangeRenderMode: (mode: ViewportRenderMode) => void;
   onOpenExportModal: () => void;
   onOpenAICopilot: () => void;
+  onOpenCloudSync:()=>void;
   onOpenShortcuts: () => void;
   onTakeSnapshot: () => void;
   canUndo: boolean;
@@ -30,6 +32,7 @@ interface HeaderProps {
   onRedo: () => void;
   onOpenSettings: () => void;
   settingsButtonRef?: React.RefObject<HTMLButtonElement | null>;
+  cloudButtonRef?:React.RefObject<HTMLButtonElement|null>;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -39,6 +42,7 @@ export const Header: React.FC<HeaderProps> = ({
   onChangeRenderMode,
   onOpenExportModal,
   onOpenAICopilot,
+  onOpenCloudSync,
   onOpenShortcuts,
   onTakeSnapshot,
   canUndo,
@@ -47,6 +51,7 @@ export const Header: React.FC<HeaderProps> = ({
   onRedo,
   onOpenSettings,
   settingsButtonRef,
+  cloudButtonRef,
 }) => {
   return (
     <header className="h-14 bg-slate-900/90 backdrop-blur-md border-b border-slate-800/80 px-4 flex items-center justify-between z-30 select-none">
@@ -146,6 +151,10 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Sparkles className="w-3.5 h-3.5 animate-pulse text-amber-300" />
           A K I I R O AI
+        </button>
+
+        <button ref={cloudButtonRef} aria-label="Open Saved Versions" onClick={onOpenCloudSync} className="px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-800 text-slate-200 text-xs font-medium flex items-center gap-1.5 border border-slate-700/60 transition-colors" title="Saved Versions">
+          <History className="w-3.5 h-3.5 text-sky-400"/><span className="hidden md:inline">Saved Versions</span>
         </button>
 
         {/* 4K Render Snapshot */}

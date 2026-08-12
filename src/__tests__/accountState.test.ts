@@ -57,6 +57,22 @@ describe('ordered account state', () => {
     expect(saved).toEqual(['user-b']);
   });
 
+  it('waits for an already-dispatched autosave before snapshot load can replace Current Version',async()=>{
+    let releasePut!:()=>void;const putGate=new Promise<void>(resolve=>{releasePut=resolve;});const order:string[]=[];
+    const runner=createLatestAsyncRunner<string>(async value=>{order.push(`put-start:${value}`);await putGate;order.push(`put-done:${value}`);});
+    void runner('old-current');
+    const load=(async()=>{await runner.awaitIdle();order.push('load-snapshot');})();
+    await Promise.resolve();expect(order).toEqual(['put-start:old-current']);
+    releasePut();await load;expect(order).toEqual(['put-start:old-current','put-done:old-current','load-snapshot']);
+  });
+
+  it('awaitIdle still waits for an aborted generation to settle before a replacement operation',async()=>{
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});let settled=false;
+    const runner=createLatestAsyncRunner<string>(async()=>{await gate;settled=true;});
+    void runner('old');runner.reset();const idle=runner.awaitIdle();
+    await Promise.resolve();expect(settled).toBe(false);release();await idle;expect(settled).toBe(true);
+  });
+
   it('serializes preference writes and leaves the newest reverse-delay result visible', async () => {
     let releaseFirst!: () => void;
     const first = new Promise<void>(resolve => { releaseFirst = resolve; });

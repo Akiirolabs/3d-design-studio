@@ -92,7 +92,7 @@ describe('account and project API', () => {
   it('runs migrations idempotently', () => {
     migrateDatabase(db);
     migrateDatabase(db);
-    expect((db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number }).count).toBe(2);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number }).count).toBe(3);
   });
 
   it('supports signup, session, signout, and normalized username uniqueness', async () => {
@@ -333,6 +333,20 @@ describe('account and project API', () => {
     expect((await (await request('/snapshots',{headers:{cookie:alice.cookie}})).json()).snapshots[0].project.name).toBe('workspace');
     expect((await request(`/snapshots/${snapshot.id}`,{method:'DELETE',headers:{cookie:bob.cookie}})).status).toBe(404);
     expect((await request(`/snapshots/${snapshot.id}`,{method:'DELETE',headers:{cookie:alice.cookie}})).status).toBe(204);
+  });
+
+  it('upserts one owner-scoped current workspace and atomically loads an immutable snapshot into it',async()=>{
+    const alice=await signup('alice');const bob=await signup('bob');
+    expect((await request('/current-workspace',{headers:{cookie:alice.cookie}})).status).toBe(200);
+    await request('/current-workspace',{method:'PUT',headers:{cookie:alice.cookie},body:JSON.stringify(project('first'))});
+    await request('/current-workspace',{method:'PUT',headers:{cookie:alice.cookie},body:JSON.stringify(project('second'))});
+    const aliceId=(db.prepare('SELECT id FROM users WHERE normalized_username = ?').get('alice') as {id:string}).id;
+    expect((db.prepare('SELECT COUNT(*) count FROM current_workspaces WHERE owner_id = ?').get(aliceId) as {count:number}).count).toBe(1);
+    const created=await request('/snapshots',{method:'POST',headers:{cookie:alice.cookie},body:JSON.stringify({name:'Milestone',project:project('snapshot-source')})});const snapshot=(await created.json()).snapshot;
+    expect((await request(`/snapshots/${snapshot.id}/load`,{method:'POST',headers:{cookie:bob.cookie}})).status).toBe(404);
+    expect((await request(`/snapshots/${snapshot.id}/load`,{method:'POST',headers:{cookie:alice.cookie}})).status).toBe(200);
+    expect(await (await request('/current-workspace',{headers:{cookie:alice.cookie}})).json()).toMatchObject({project:{id:'snapshot-source'}});
+    expect((await (await request('/snapshots',{headers:{cookie:alice.cookie}})).json()).snapshots[0].project.id).toBe('snapshot-source');
   });
 
   it('requires authentication and validates snapshot names',async()=>{

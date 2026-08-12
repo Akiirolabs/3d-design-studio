@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { accountApi, getGuestPreferences, partitionSnapshots, saveGuestPreferences } from '../utils/accountApi';
+import { accountApi, getGuestPreferences, saveGuestPreferences } from '../utils/accountApi';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -35,11 +35,13 @@ describe('account API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2,'/api/snapshots/snap%2Fone',expect.objectContaining({method:'DELETE'}));
   });
 
-  it('partitions exactly five recent snapshots in server order',()=>{
-    const snapshots=Array.from({length:7},(_,index)=>({id:String(index),name:String(index),createdAt:String(index),project:{} as any}));
-    expect(partitionSnapshots(snapshots).recent.map(item=>item.id)).toEqual(['0','1','2','3','4']);
-    expect(partitionSnapshots(snapshots).older.map(item=>item.id)).toEqual(['5','6']);
+  it('uses one canonical current-workspace route and an atomic snapshot load route',async()=>{
+    const fetchMock=vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({project:{id:'p'},updatedAt:'now'}),{status:200,headers:{'Content-Type':'application/json'}})).mockResolvedValueOnce(new Response(JSON.stringify({project:{id:'p'},updatedAt:'now'}),{status:200,headers:{'Content-Type':'application/json'}}));
+    vi.stubGlobal('fetch',fetchMock);const project={id:'p'} as any;await accountApi.saveCurrentWorkspace(project);await accountApi.loadSnapshot('snap/1');
+    expect(fetchMock).toHaveBeenNthCalledWith(1,'/api/current-workspace',expect.objectContaining({method:'PUT',body:JSON.stringify(project)}));
+    expect(fetchMock).toHaveBeenNthCalledWith(2,'/api/snapshots/snap%2F1/load',expect.objectContaining({method:'POST'}));
   });
+
 });
 
 describe('guest preferences', () => {

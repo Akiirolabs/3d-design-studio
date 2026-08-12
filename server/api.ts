@@ -254,6 +254,30 @@ export function createApiRouter(db: AppDatabase): express.Router {
     res.json(skippedCorrupt.length?{snapshots,skippedCorrupt}:{snapshots});
   });
 
+  router.get('/current-workspace',requireAuth,(req,res)=>{
+    const row=db.prepare('SELECT data_json,updated_at FROM current_workspaces WHERE owner_id = ?').get(req.sessionUser!.id) as {data_json:string;updated_at:string}|undefined;
+    if(!row)return res.json({project:null});
+    try{const valid=normalizeAndValidateProjectData(JSON.parse(row.data_json));if('error' in valid)return res.status(422).json({error:'Current workspace data is invalid.'});return res.json({project:valid.data,updatedAt:row.updated_at});}catch{return res.status(422).json({error:'Current workspace data is invalid.'});}
+  });
+
+  router.put('/current-workspace',requireAuth,(req,res)=>{
+    const valid=normalizeAndValidateProjectData(req.body);if('error' in valid)return res.status(400).json({error:valid.error});
+    const encoded=JSON.stringify(valid.data);if(Buffer.byteLength(encoded)>MAX_PROJECT_BYTES)return res.status(413).json({error:'Current workspace exceeds the 1 MB limit.'});
+    const updatedAt=new Date().toISOString();
+    db.prepare(`INSERT INTO current_workspaces (owner_id,data_json,updated_at) VALUES (?,?,?) ON CONFLICT(owner_id) DO UPDATE SET data_json=excluded.data_json,updated_at=excluded.updated_at`).run(req.sessionUser!.id,encoded,updatedAt);
+    res.json({project:valid.data,updatedAt});
+  });
+
+  router.post('/snapshots/:id/load',requireAuth,(req,res)=>{
+    const row=db.prepare('SELECT id,data_json FROM snapshots WHERE owner_id = ? AND id = ?').get(req.sessionUser!.id,req.params.id) as StoredProjectRow|undefined;
+    if(!row)return res.status(404).json({error:'Snapshot not found.'});
+    let project:ProjectData|undefined;try{const parsed=JSON.parse(row.data_json) as {id?:unknown};if(typeof parsed.id==='string')project=parseStoredProject({id:parsed.id,data_json:row.data_json});}catch{project=undefined;}
+    if(!project)return res.status(422).json({error:'Saved version data is invalid.'});
+    const updatedAt=new Date().toISOString();
+    db.prepare(`INSERT INTO current_workspaces (owner_id,data_json,updated_at) VALUES (?,?,?) ON CONFLICT(owner_id) DO UPDATE SET data_json=excluded.data_json,updated_at=excluded.updated_at`).run(req.sessionUser!.id,JSON.stringify(project),updatedAt);
+    res.json({project,updatedAt});
+  });
+
   router.post('/snapshots',requireAuth,(req,res)=>{
     const name=typeof req.body?.name==='string'?req.body.name.trim():'';
     if(name.length<1||name.length>80)return res.status(400).json({error:'Snapshot name must be 1-80 characters.'});

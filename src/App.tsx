@@ -7,11 +7,14 @@ import {
   TransformMode,
   ViewportRenderMode,
   AssetTemplate,
+  CloudSession,
 } from './types';
 import {
   getInitialProject,
   saveProjectToStorage,
   loadSavedProjects,
+  getInitialCloudSession,
+  generateRoomCode,
 } from './utils/storage';
 import { captureRenderSnapshot } from './utils/exporters';
 import { canPersistProject, objectsWithPreview } from './utils/projectPreview';
@@ -22,6 +25,8 @@ import { SidebarRight } from './components/SidebarRight';
 import { Canvas3D } from './components/Canvas3D';
 import { ExportModal } from './components/ExportModal';
 import { AICopilotModal } from './components/AICopilotModal';
+import { CloudSyncModal } from './components/CloudSyncModal';
+import { SavedVersionsModal } from './components/SavedVersionsModal';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { SettingsModal } from './components/SettingsModal';
 import {
@@ -32,9 +37,10 @@ import {
   type AccountUser,
   type NamedSnapshot,
 } from './utils/accountApi';
-import { commitWithNonfatalRefresh, createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange, removeSnapshot, upsertCloudProject, upsertSnapshot } from './utils/accountState';
+import { commitWithNonfatalRefresh, createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange, removeSnapshot, upsertSnapshot } from './utils/accountState';
 import { alignSelectedObjectPivots, getAlignmentIssue, reconcileSelection, resolvePrimaryActionId, selectObject, type SelectionState } from './utils/multiSelection';
 import { applyBooleanSubtraction, hasBooleanDependency, removeBooleanSubtraction, updateTransformWithBooleanGuard } from './utils/booleanGeometry';
+import {canAutosaveCurrentWorkspace,editorShortcutsDisabled,isActiveHydration,isActiveHydrationOperation,type WorkspaceHydrationStatus} from './utils/accountHydration';
 
 export default function App() {
   // Main Project State
@@ -60,25 +66,31 @@ export default function App() {
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [aiCopilotOpen, setAiCopilotOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [cloudSyncOpen,setCloudSyncOpen]=useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [preferences, setPreferences] = useState<AccountPreferences>(getGuestPreferences);
-  const [cloudProjects, setCloudProjects] = useState<ProjectData[]>([]);
   const [snapshots,setSnapshots]=useState<NamedSnapshot[]>([]);
+  const [autosaveStatus,setAutosaveStatus]=useState('Waiting to sync…');
+  const [workspaceHydration,setWorkspaceHydration]=useState<WorkspaceHydrationStatus>('idle');
+  const [cloudSession,setCloudSession]=useState<CloudSession>(()=>getInitialCloudSession(generateRoomCode(),project.name));
   const [snapshotsLoading,setSnapshotsLoading]=useState(false);const [snapshotCorruptCount,setSnapshotCorruptCount]=useState(0);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
   const [modelingNotice, setModelingNotice] = useState<string | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const cloudButtonRef=useRef<HTMLButtonElement>(null);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const accountUserRef = useRef<AccountUser | null>(null);
   const authSessionRef = useRef(0);
+  const hydrationOperationRef=useRef(0);
   const autosaveRunnerRef = useRef(createLatestAsyncRunner<{ project: ProjectData; userId: string; session: number }>(async (pending, signal) => {
     if (pending.session !== authSessionRef.current || pending.userId !== accountUserRef.current?.id) return;
-    const result = await accountApi.saveProject(pending.project, signal);
+    setAutosaveStatus('Saving current version…');
+    const result = await accountApi.saveCurrentWorkspace(pending.project, signal);
     if (signal.aborted || pending.session !== authSessionRef.current || pending.userId !== accountUserRef.current?.id) return;
-    setCloudProjects(current => current.map(saved => saved.id === result.project.id ? result.project : saved));
+    setAutosaveStatus(`Saved ${new Date(result.updatedAt).toLocaleTimeString()}`);
   }));
   const preferenceQueueRef = useRef(createPreferenceUpdateQueue(
     preferences,
@@ -87,12 +99,33 @@ export default function App() {
   ));
   const beginAccountSession = useCallback((user: AccountUser | null, nextPreferences: AccountPreferences) => {
     authSessionRef.current += 1;
+    hydrationOperationRef.current+=1;
     autosaveRunnerRef.current.reset();
     accountUserRef.current = user;
     setAccountUser(user);
+    setWorkspaceHydration(user?'loading':'idle');
     preferenceQueueRef.current.reset(nextPreferences);
   }, []);
-  const currentProjectStored = cloudProjects.some(saved => saved.id === project.id);
+  const applyWorkspace = useCallback((loaded:ProjectData) => {
+    setProject(loaded);setHistory([loaded]);setHistoryIndex(0);saveProjectToStorage(loaded);
+    setSelection(reconcileSelection(loaded.objects,{ids:[],primaryId:null},true));setPreviewObject(null);
+  },[]);
+  const hydrateCurrentWorkspace = useCallback(async(user:AccountUser) => {
+    const session=authSessionRef.current;
+    const operation=++hydrationOperationRef.current;
+    setWorkspaceHydration('loading');setAutosaveStatus('Loading current version…');
+    try{
+      const result=await accountApi.currentWorkspace();
+      if(!isActiveHydration(session,user.id,authSessionRef.current,accountUserRef.current?.id)||!isActiveHydrationOperation(operation,hydrationOperationRef.current))return false;
+      if(result.project)applyWorkspace(result.project);
+      setAutosaveStatus(result.project?(result.updatedAt?`Saved ${new Date(result.updatedAt).toLocaleTimeString()}`:'Current version loaded'):'Ready to save current version');
+      setWorkspaceHydration('ready');setAccountError(null);return true;
+    }catch{
+      if(!isActiveHydration(session,user.id,authSessionRef.current,accountUserRef.current?.id)||!isActiveHydrationOperation(operation,hydrationOperationRef.current))return false;
+      setWorkspaceHydration('failed');setAutosaveStatus('Current version could not be loaded');
+      setAccountError('Could not load Current Version. Cloud autosave is paused to protect your saved work. Retry when ready.');return false;
+    }
+  },[applyWorkspace]);
   const handleSelectObject = useCallback((id: string | null, additive = false) => {
     setPreviewObject(null);
     setSelection(current => selectObject(current, id, additive));
@@ -132,18 +165,19 @@ export default function App() {
 
   const refreshCloudProjects = useCallback(async () => {
     setSnapshotsLoading(true);
-    try{const [projectsResult,snapshotsResult]=await Promise.all([accountApi.projects(),accountApi.snapshots()]);
-    setCloudProjects(projectsResult.projects);setSnapshots(snapshotsResult.snapshots);setSnapshotCorruptCount(snapshotsResult.skippedCorrupt?.length??0);}finally{setSnapshotsLoading(false);}
+    try{const snapshotsResult=await accountApi.snapshots();
+    setSnapshots(snapshotsResult.snapshots);setSnapshotCorruptCount(snapshotsResult.skippedCorrupt?.length??0);}finally{setSnapshotsLoading(false);}
   }, []);
 
   useEffect(() => {
     void accountApi.session().then(session => {
       if (session.authenticated && session.user && session.preferences) {
         beginAccountSession(session.user, session.preferences);
-        void refreshCloudProjects().catch(() => setAccountError('Could not load cloud designs.'));
+        void hydrateCurrentWorkspace(session.user);
+        void refreshCloudProjects().catch(() => setAccountError('Could not load saved versions.'));
       }
     }).catch(() => setAccountError('Account services are unavailable. Guest designs still work.'));
-  }, [beginAccountSession, refreshCloudProjects]);
+  }, [beginAccountSession, hydrateCurrentWorkspace, refreshCloudProjects]);
 
   useEffect(() => {
     document.documentElement.dataset.appTheme = preferences.theme;
@@ -151,14 +185,14 @@ export default function App() {
   }, [preferences.theme, preferences.reducedMotion]);
 
   useEffect(() => {
-    if (!accountUser || !preferences.autosave || !currentProjectStored || !canPersistProject(previewObject)) return;
+    if (!canAutosaveCurrentWorkspace(accountUser?.id,workspaceHydration) || !accountUser || !canPersistProject(previewObject)) return;
     const timer = window.setTimeout(() => {
       void autosaveRunnerRef.current({ project, userId: accountUser.id, session: authSessionRef.current }).catch(error => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) setAccountError('Cloud autosave failed. Your local design is safe.');
+        if (!(error instanceof DOMException && error.name === 'AbortError')) {setAutosaveStatus('Autosave failed — local recovery is safe');setAccountError('Cloud autosave failed. Your local design is safe.');}
       });
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [project, previewObject, accountUser, preferences.autosave, currentProjectStored, refreshCloudProjects]);
+  }, [project, previewObject, accountUser,workspaceHydration]);
 
   // Save changes to localStorage & update history stack
   const pushStateToHistory = useCallback(
@@ -401,7 +435,7 @@ export default function App() {
   // Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (settingsOpen) return;
+      if (editorShortcutsDisabled(settingsOpen,cloudSyncOpen)) return;
       // Ignore if typing in an input or textarea
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
@@ -433,7 +467,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selection, project.objects, historyIndex, history, settingsOpen]);
+  }, [selection, project.objects, historyIndex, history, settingsOpen,cloudSyncOpen]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
@@ -446,6 +480,7 @@ export default function App() {
         onChangeRenderMode={setRenderMode}
         onOpenExportModal={() => setExportModalOpen(true)}
         onOpenAICopilot={() => setAiCopilotOpen(true)}
+        onOpenCloudSync={()=>{setCloudSyncOpen(true);setSettingsOpen(false);if(workspaceHydration!=='failed')setAccountError(null);setAccountNotice(null);if(accountUser)void refreshCloudProjects().catch(()=>setAccountError('Could not load saved versions.'));}}
         onOpenShortcuts={() => setShortcutsOpen(true)}
         onTakeSnapshot={handleTakeSnapshot}
         canUndo={historyIndex > 0}
@@ -453,10 +488,11 @@ export default function App() {
         onUndo={handleUndo}
         onRedo={handleRedo}
         onOpenSettings={() => {
-          setExportModalOpen(false); setAiCopilotOpen(false); setShortcutsOpen(false);
+          setExportModalOpen(false); setAiCopilotOpen(false); setCloudSyncOpen(false);setShortcutsOpen(false);
           setSettingsOpen(true);
         }}
         settingsButtonRef={settingsButtonRef}
+        cloudButtonRef={cloudButtonRef}
       />
 
       {/* Main Studio Viewport & Sidebars */}
@@ -482,7 +518,7 @@ export default function App() {
             transformMode={transformMode}
             renderMode={renderMode}
             onRegisterRenderer={handleRegisterRenderer}
-            shortcutsDisabled={settingsOpen}
+            shortcutsDisabled={editorShortcutsDisabled(settingsOpen,cloudSyncOpen)}
             onModelingNotice={setModelingNotice}
           />
         </main>
@@ -531,21 +567,17 @@ export default function App() {
         returnFocusRef={settingsButtonRef}
         user={accountUser}
         preferences={preferences}
-        snapshots={snapshots}
-        snapshotsLoading={snapshotsLoading}
-        snapshotCorruptCount={snapshotCorruptCount}
-        currentProjectName={project.name}
         busy={accountBusy}
         error={accountError}
         notice={accountNotice}
         onAuthenticate={async (mode, username, password) => accountAction(async () => {
           const result = mode === 'signup' ? await accountApi.signup(username, password) : await accountApi.signin(username, password);
-          beginAccountSession(result.user, result.preferences); await refreshCloudProjects();
+          beginAccountSession(result.user, result.preferences); await Promise.all([hydrateCurrentWorkspace(result.user),refreshCloudProjects()]);
           setAccountNotice(mode === 'signup' ? 'Account created. Import guest designs when you are ready.' : 'Signed in. Import guest designs when you are ready.');
         })}
         onSignout={async () => accountAction(async () => {
           autosaveRunnerRef.current.reset();
-          await accountApi.signout(); setCloudProjects([]);setSnapshots([]);
+          await accountApi.signout(); setSnapshots([]);
           const guestPreferences = getGuestPreferences(); beginAccountSession(null, guestPreferences); setAccountNotice('Signed out. You are using guest mode.');
         })}
         onChangeUsername={async username => accountAction(async () => {
@@ -559,15 +591,12 @@ export default function App() {
           const result = await accountApi.importProjects(loadSavedProjects()); await refreshCloudProjects();
           setAccountNotice(`Imported ${result.imported.length}; skipped ${result.skipped.length} already stored.`);
         })}
-        onCreateSnapshot={async name=>{setAccountBusy(true);setAccountError(null);setAccountNotice(null);try{await commitWithNonfatalRefresh(()=>accountApi.createSnapshot(name,project),result=>setSnapshots(current=>upsertSnapshot(current,result.snapshot)),refreshCloudProjects);setAccountNotice('Named snapshot created.');return true;}catch(error){setAccountError(error instanceof Error?error.message:'Could not create snapshot.');return false;}finally{setAccountBusy(false);}}}
-        onOpenSnapshot={async snapshot=>accountAction(async()=>{
-          const now=new Date().toISOString();
-          const workingCopy={...structuredClone(snapshot.project),id:`workspace_${crypto.randomUUID()}`,name:`${snapshot.name} Working Copy`,createdAt:now,updatedAt:now};
-          await commitWithNonfatalRefresh(()=>accountApi.saveProject(workingCopy),result=>setCloudProjects(current=>upsertCloudProject(current,result.project)),refreshCloudProjects);
-          setProject(workingCopy);setHistory([workingCopy]);setHistoryIndex(0);saveProjectToStorage(workingCopy);setSelection(current=>reconcileSelection(workingCopy.objects,current,true));setAccountNotice(`Opened ${snapshot.name} as a new workspace.`);setSettingsOpen(false);
-        })}
-        onDeleteSnapshot={async snapshot=>accountAction(async()=>{if(preferences.confirmDelete&&!window.confirm(`Delete snapshot ${snapshot.name}?`))return;await commitWithNonfatalRefresh(()=>accountApi.deleteSnapshot(snapshot.id),()=>setSnapshots(current=>removeSnapshot(current,snapshot.id)),refreshCloudProjects);setAccountNotice('Snapshot deleted.');})}
+        cloudSection={<CloudSyncModal embedded isOpen onClose={()=>undefined} returnFocusRef={settingsButtonRef} cloudSession={cloudSession} onUpdateCloudSession={setCloudSession}/>}
       />
+      <SavedVersionsModal isOpen={cloudSyncOpen} onClose={()=>setCloudSyncOpen(false)} returnFocusRef={cloudButtonRef} authenticated={Boolean(accountUser)} snapshots={snapshots} loading={snapshotsLoading} corruptCount={snapshotCorruptCount} busy={accountBusy} error={accountError} notice={accountNotice} currentProjectName={project.name} autosaveStatus={autosaveStatus} workspaceReady={workspaceHydration==='ready'} canRetryHydration={workspaceHydration==='failed'} onRetryHydration={async()=>{if(accountUser)await hydrateCurrentWorkspace(accountUser);}}
+        onCreateSnapshot={async name=>{if(workspaceHydration!=='ready')return false;setAccountBusy(true);setAccountError(null);setAccountNotice(null);try{if(workspaceHydration!=='ready')return false;await commitWithNonfatalRefresh(()=>accountApi.createSnapshot(name,structuredClone(project)),result=>setSnapshots(current=>upsertSnapshot(current,result.snapshot)),refreshCloudProjects);setAccountNotice('Version saved.');return true;}catch(error){setAccountError(error instanceof Error?error.message:'Could not save version.');return false;}finally{setAccountBusy(false);}}}
+        onLoadSnapshot={async snapshot=>{if(workspaceHydration!=='ready')return;await accountAction(async()=>{if(workspaceHydration!=='ready')return;const session=authSessionRef.current;const userId=accountUserRef.current?.id;if(!userId)return;const operation=++hydrationOperationRef.current;setWorkspaceHydration('loading');setAutosaveStatus('Finishing current autosave…');try{await autosaveRunnerRef.current.awaitIdle();if(!isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id)||!isActiveHydrationOperation(operation,hydrationOperationRef.current))return;const result=await accountApi.loadSnapshot(snapshot.id);if(!isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id)||!isActiveHydrationOperation(operation,hydrationOperationRef.current))return;autosaveRunnerRef.current.reset();const loaded=structuredClone(result.project);applyWorkspace(loaded);setAutosaveStatus(`Saved ${new Date(result.updatedAt).toLocaleTimeString()}`);setAccountNotice(`${snapshot.name} loaded into Current Version.`);}finally{if(isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id)&&isActiveHydrationOperation(operation,hydrationOperationRef.current))setWorkspaceHydration('ready');}})}}
+        onDeleteSnapshot={async snapshot=>accountAction(async()=>{if(preferences.confirmDelete&&!window.confirm(`Delete saved version ${snapshot.name}?`))return;await commitWithNonfatalRefresh(()=>accountApi.deleteSnapshot(snapshot.id),()=>setSnapshots(current=>removeSnapshot(current,snapshot.id)),refreshCloudProjects);setAccountNotice('Saved version deleted.');})}/>
     </div>
   );
 }

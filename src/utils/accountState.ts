@@ -4,6 +4,7 @@ import type { AccountPreferences, AccountUser, NamedSnapshot } from './accountAp
 export interface LatestAsyncRunner<T> {
   (value: T): Promise<void>;
   reset(): void;
+  awaitIdle(): Promise<void>;
 }
 
 export interface PreferenceUpdateQueue {
@@ -58,13 +59,14 @@ export function createLatestAsyncRunner<T>(run: (value: T, signal: AbortSignal) 
   let drainPromise: Promise<void> | null = null;
   let controller = new AbortController();
   let generation = 0;
+  const activeDrains=new Set<Promise<void>>();
 
   const startDrain = (): Promise<void> => {
     if (drainPromise) return drainPromise;
     const activeGeneration = generation;
     const activeController = controller;
     let firstError: unknown;
-    drainPromise = (async () => {
+    const drain = (async () => {
       while (pending !== undefined && activeGeneration === generation && !activeController.signal.aborted) {
         const value = pending;
         pending = undefined;
@@ -77,6 +79,9 @@ export function createLatestAsyncRunner<T>(run: (value: T, signal: AbortSignal) 
     })().finally(() => {
       if (activeGeneration === generation) drainPromise = null;
     });
+    drainPromise=drain;
+    activeDrains.add(drain);
+    void drain.finally(()=>activeDrains.delete(drain)).catch(()=>undefined);
     return drainPromise;
   };
 
@@ -91,6 +96,7 @@ export function createLatestAsyncRunner<T>(run: (value: T, signal: AbortSignal) 
     controller = new AbortController();
     drainPromise = null;
   };
+  enqueue.awaitIdle=async()=>{while(activeDrains.size){await Promise.allSettled([...activeDrains]);}};
   return enqueue;
 }
 

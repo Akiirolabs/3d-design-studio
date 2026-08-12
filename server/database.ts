@@ -48,6 +48,13 @@ const migrations = [
     );
     CREATE INDEX snapshots_owner_created_idx ON snapshots(owner_id, created_at DESC);
   `,
+  `
+    CREATE TABLE current_workspaces (
+      owner_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      data_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
 ];
 
 export function migrateDatabase(db: AppDatabase): void {
