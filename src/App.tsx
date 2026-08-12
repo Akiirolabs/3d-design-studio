@@ -17,13 +17,13 @@ import {
   generateRoomCode,
 } from './utils/storage';
 import { captureRenderSnapshot } from './utils/exporters';
+import { canPersistProject, objectsWithPreview } from './utils/projectPreview';
 import { normalizeAndValidateProjectData } from './utils/projectValidation';
 import { Header } from './components/Header';
 import { SidebarLeft } from './components/SidebarLeft';
 import { SidebarRight } from './components/SidebarRight';
 import { Canvas3D } from './components/Canvas3D';
-import { ExportModal } from './components/ExportModal';
-import { AICopilotModal } from './components/AICopilotModal';
+import { ExportModal } from './components/ExportModal';CopilotModal } from './components/AICopilotModal';
 import { CloudSyncModal } from './components/CloudSyncModal';
 import { ShortcutsModal } from './components/ShortcutsModal';
 import { SettingsModal } from './components/SettingsModal';
@@ -35,17 +35,22 @@ import {
   type AccountUser,
 } from './utils/accountApi';
 import { createLatestAsyncRunner, createPreferenceUpdateQueue, persistPreferenceChange } from './utils/accountState';
+import { alignSelectedObjectPivots, getAlignmentIssue, reconcileSelection, resolvePrimaryActionId, selectObject, type SelectionState } from './utils/multiSelection';
+import { applyBooleanSubtraction, hasBooleanDependency, removeBooleanSubtraction, updateTransformWithBooleanGuard } from './utils/booleanGeometry';
 
 export default function App() {
   // Main Project State
   const [project, setProject] = useState<ProjectData>(getInitialProject);
+  const [previewObject, setPreviewObject] = useState<SceneObject | null>(null);
 
   // Undo / Redo Stack
   const [history, setHistory] = useState<ProjectData[]>([getInitialProject()]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
   // Selection & Tools
-  const [selectedObjectId, setSelectedObjectId] = useState<string | null>('obj_sofa');
+  const [selection, setSelection] = useState<SelectionState>(() => reconcileSelection(getInitialProject().objects, { ids: ['obj_sofa'], primaryId: 'obj_sofa' }, true));
+  const selectedObjectId = selection.primaryId;
+  const selectedObjectIds = selection.ids;
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
   const [renderMode, setRenderMode] = useState<ViewportRenderMode>('shaded');
 
@@ -70,6 +75,7 @@ export default function App() {
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  const [modelingNotice, setModelingNotice] = useState<string | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const accountUserRef = useRef<AccountUser | null>(null);
@@ -93,6 +99,36 @@ export default function App() {
     preferenceQueueRef.current.reset(nextPreferences);
   }, []);
   const currentProjectStored = cloudProjects.some(saved => saved.id === project.id);
+  const handleSelectObject = useCallback((id: string | null, additive = false) => {
+    setPreviewObject(null);
+    setSelection(current => selectObject(current, id, additive));
+  }, []);
+
+  const handleAlignObjects = (axis: 0 | 1 | 2, mode: 'min' | 'center' | 'max') => {
+    const issue = getAlignmentIssue(project.objects, selectedObjectIds);
+    if (issue) return;
+    const objects = alignSelectedObjectPivots(project.objects, selectedObjectIds, axis, mode);
+    if (objects) pushStateToHistory({ ...project, objects });
+  };
+
+  const handleApplyBoolean = (targetId: string, cutterId: string) => {
+    try {
+      const objects = applyBooleanSubtraction(project.objects, targetId, cutterId);
+      pushStateToHistory({ ...project, objects });
+      setSelection({ ids: [targetId], primaryId: targetId });
+      setModelingNotice('Hole applied. The cutter remains hidden and recoverable.');
+    } catch (error) {
+      setModelingNotice(error instanceof Error ? error.message : 'Could not create the hole.');
+    }
+  };
+
+  const handleRemoveBoolean = (targetId: string) => {
+    const objects = removeBooleanSubtraction(project.objects, targetId);
+    if (objects !== project.objects) {
+      pushStateToHistory({ ...project, objects });
+      setModelingNotice('Hole removed. The cutter was restored and is editable again.');
+    }
+  };
 
   const accountAction = useCallback(async (action: () => Promise<void>) => {
     setAccountBusy(true); setAccountError(null); setAccountNotice(null);
@@ -120,14 +156,14 @@ export default function App() {
   }, [preferences.theme, preferences.reducedMotion]);
 
   useEffect(() => {
-    if (!accountUser || !preferences.autosave || !currentProjectStored) return;
+    if (!accountUser || !preferences.autosave || !currentProjectStored || !canPersistProject(previewObject)) return;
     const timer = window.setTimeout(() => {
       void autosaveRunnerRef.current({ project, userId: accountUser.id, session: authSessionRef.current }).catch(error => {
         if (!(error instanceof DOMException && error.name === 'AbortError')) setAccountError('Cloud autosave failed. Your local design is safe.');
       });
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [project, accountUser, preferences.autosave, currentProjectStored, refreshCloudProjects]);
+  }, [project, previewObject, accountUser, preferences.autosave, currentProjectStored, refreshCloudProjects]);
 
   // Save changes to localStorage & update history stack
   const pushStateToHistory = useCallback(
@@ -151,6 +187,7 @@ export default function App() {
       const prev = history[historyIndex - 1];
       setHistoryIndex(historyIndex - 1);
       setProject(prev);
+      setSelection(current => reconcileSelection(prev.objects, current));
       saveProjectToStorage(prev);
     }
   };
@@ -160,6 +197,7 @@ export default function App() {
       const next = history[historyIndex + 1];
       setHistoryIndex(historyIndex + 1);
       setProject(next);
+      setSelection(current => reconcileSelection(next.objects, current));
       saveProjectToStorage(next);
     }
   };
@@ -185,19 +223,36 @@ export default function App() {
       transmission: 0,
       visible: true,
       locked: false,
+      ...(template.type === 'parametric-extrusion' ? {
+        geometry: {
+          kind: 'parametric-extrusion' as const,
+          profile: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] as [number, number][],
+          height: 1,
+          baseScale: 1,
+          topScale: 1,
+          twistAngle: 0,
+          twistSteps: 12,
+          twistMode: 'smooth' as const,
+        },
+      } : {}),
     };
 
     const updatedObjects = [...project.objects, newObj];
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
-    setSelectedObjectId(newObj.id);
+    setSelection({ ids: [newObj.id], primaryId: newObj.id });
   };
 
   // Update Object (Transform or Material)
   const handleUpdateObject = (updatedObj: SceneObject) => {
+    setPreviewObject(null);
     const updatedObjects = project.objects.map((o) => (o.id === updatedObj.id ? updatedObj : o));
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
+  };
+
+  const handlePreviewObject = (updatedObj: SceneObject | null) => {
+    setPreviewObject(updatedObj);
   };
 
   // Real-time live update for continuous Gizmo drag (updates project state smoothly without history overhead)
@@ -211,6 +266,9 @@ export default function App() {
       setProject((prev) => {
         const target = prev.objects.find((o) => o.id === id);
         if (!target) return prev;
+        // Applied Boolean solids are recomputed only once, after the gizmo drag
+        // commits. Their live Three.js preview must never enter persisted state.
+        if (hasBooleanDependency(prev.objects, id)) return prev;
 
         if (
           target.position[0] === position[0] &&
@@ -243,10 +301,13 @@ export default function App() {
   ) => {
     const target = project.objects.find((o) => o.id === id);
     if (target) {
-      const updatedObj = { ...target, position, rotation, scale };
-      const updatedObjects = project.objects.map((o) => (o.id === id ? updatedObj : o));
-      const updatedProject = { ...project, objects: updatedObjects };
-      pushStateToHistory(updatedProject);
+      const result=updateTransformWithBooleanGuard(project.objects,id,position,rotation,scale);
+      if(result.error){
+        setProject(project);
+        setModelingNotice(result.error);
+        return;
+      }
+      pushStateToHistory({ ...project, objects: result.objects });
     }
   };
 
@@ -254,6 +315,10 @@ export default function App() {
   const handleDuplicateObject = (id: string) => {
     const target = project.objects.find((o) => o.id === id);
     if (!target) return;
+    if (hasBooleanDependency(project.objects, id)) {
+      setModelingNotice('Remove the Boolean hole before duplicating its target or cutter.');
+      return;
+    }
 
     const dup: SceneObject = {
       ...target,
@@ -265,18 +330,21 @@ export default function App() {
     const updatedObjects = [...project.objects, dup];
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
-    setSelectedObjectId(dup.id);
+    setSelection({ ids: [dup.id], primaryId: dup.id });
   };
 
   // Delete Object
   const handleDeleteObject = (id: string) => {
     if (preferences.confirmDelete && !window.confirm('Delete this object?')) return;
+    const target = project.objects.find(o => o.id === id);
+    if (target?.boolean || target?.holeForId || project.objects.some(o => o.boolean?.cutterId === id)) {
+      setModelingNotice('Remove the Boolean hole before deleting its target or cutter.');
+      return;
+    }
     const updatedObjects = project.objects.filter((o) => o.id !== id);
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
-    if (selectedObjectId === id) {
-      setSelectedObjectId(null);
-    }
+    setSelection(current => reconcileSelection(updatedObjects, current));
   };
 
   // Update Environment Settings
@@ -294,6 +362,7 @@ export default function App() {
         return;
       }
       pushStateToHistory(result.data);
+      setSelection(current => reconcileSelection(result.data.objects, current, true));
     } catch (e) {
       alert('Could not import project: the selected file is not valid JSON.');
     }
@@ -316,9 +385,7 @@ export default function App() {
       environment: updatedEnv,
     };
     pushStateToHistory(newProject);
-    if (newObjects.length > 0) {
-      setSelectedObjectId(newObjects[0].id);
-    }
+    setSelection(reconcileSelection(newObjects, { ids: [], primaryId: null }, true));
   };
 
   // Register WebGL Renderer & Scene refs
@@ -350,10 +417,12 @@ export default function App() {
         handleRedo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        if (selectedObjectId) handleDuplicateObject(selectedObjectId);
+        const primaryId = resolvePrimaryActionId(project.objects, selection);
+        if (primaryId) handleDuplicateObject(primaryId);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
-        if (selectedObjectId) handleDeleteObject(selectedObjectId);
+        const primaryId = resolvePrimaryActionId(project.objects, selection);
+        if (primaryId) handleDeleteObject(primaryId);
       } else if (e.key.toLowerCase() === 'g' || e.key.toLowerCase() === 't') {
         setTransformMode('translate');
       } else if (e.key.toLowerCase() === 'r') {
@@ -361,16 +430,17 @@ export default function App() {
       } else if (e.key.toLowerCase() === 's') {
         setTransformMode('scale');
       } else if (e.key === 'Escape') {
-        setSelectedObjectId(null);
+        setSelection({ ids: [], primaryId: null });
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedObjectId, historyIndex, history, settingsOpen]);
+  }, [selection, project.objects, historyIndex, history, settingsOpen]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
+      <div role="status" aria-live="polite" className="sr-only">{modelingNotice}</div>
       {/* Sleek Header */}
       <Header
         projectName={project.name}
@@ -407,9 +477,10 @@ export default function App() {
         {/* Central 3D Interactive Viewport */}
         <main className="flex-1 h-full relative">
           <Canvas3D
-            objects={project.objects}
+            objects={objectsWithPreview(project, previewObject)}
             selectedObjectId={selectedObjectId}
-            onSelectObject={setSelectedObjectId}
+            selectedObjectIds={selectedObjectIds}
+            onSelectObject={handleSelectObject}
             onUpdateObjectTransform={handleUpdateObjectTransform}
             onLiveUpdateObjectTransform={handleLiveUpdateObjectTransform}
             environment={project.environment}
@@ -417,6 +488,7 @@ export default function App() {
             renderMode={renderMode}
             onRegisterRenderer={handleRegisterRenderer}
             shortcutsDisabled={settingsOpen}
+            onModelingNotice={setModelingNotice}
           />
         </main>
 
@@ -424,8 +496,14 @@ export default function App() {
         <SidebarRight
           objects={project.objects}
           selectedObjectId={selectedObjectId}
-          onSelectObject={setSelectedObjectId}
+          selectedObjectIds={selectedObjectIds}
+          onSelectObject={handleSelectObject}
+          onAlignObjects={handleAlignObjects}
+          onApplyBoolean={handleApplyBoolean}
+          onRemoveBoolean={handleRemoveBoolean}
+          alignmentIssue={getAlignmentIssue(project.objects, selectedObjectIds)}
           onUpdateObject={handleUpdateObject}
+          onPreviewObject={handlePreviewObject}
           onDeleteObject={handleDeleteObject}
           onDuplicateObject={handleDuplicateObject}
           environment={project.environment}
@@ -492,7 +570,7 @@ export default function App() {
         })}
         onLoad={cloudProject => {
           setProject(cloudProject); setHistory([cloudProject]); setHistoryIndex(0); saveProjectToStorage(cloudProject);
-          setSelectedObjectId(null); setAccountNotice(`Loaded ${cloudProject.name}.`); setSettingsOpen(false);
+          setSelection(current => reconcileSelection(cloudProject.objects, current, true)); setAccountNotice(`Loaded ${cloudProject.name}.`); setSettingsOpen(false);
         }}
         onDelete={async cloudProject => accountAction(async () => {
           if (preferences.confirmDelete && !window.confirm(`Delete ${cloudProject.name} from your account?`)) return;

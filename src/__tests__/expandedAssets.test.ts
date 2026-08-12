@@ -7,6 +7,7 @@ import { createExpandedAsset, EXPANDED_ASSET_RECIPES, isExpandedAssetType, RPI4_
 import { AI_ASSET_TYPES, normalizeGeneratedScene } from '../../server/generatedScene';
 import { validateSceneObjects } from '../utils/projectValidation';
 import { configureTransformSnapping, TRANSFORM_SNAPS } from '../utils/transformControls';
+import { DEFAULT_PARAMETRIC_EXTRUSION } from '../utils/parametricExtrusion';
 
 describe('expanded asset catalog', () => {
   const sceneObjectFor = (type: string, category: string) => ({
@@ -14,6 +15,7 @@ describe('expanded asset catalog', () => {
     position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1],
     color: '#334155', materialPreset: 'matte_white', metalness: 0, roughness: 0.5,
     transmission: 0, visible: true, locked: false,
+    ...(type === 'parametric-extrusion' ? { geometry: DEFAULT_PARAMETRIC_EXTRUSION } : {}),
   });
 
   it('provides the requested section sizes and globally unique template IDs', () => {
@@ -28,9 +30,9 @@ describe('expanded asset catalog', () => {
 
   it('has an explicit nonempty, finite geometry recipe for every new template', () => {
     const recipeTypes = Object.keys(EXPANDED_ASSET_RECIPES).sort();
-    expect(recipeTypes).toEqual(EXPANDED_ASSET_LIBRARY.map((asset) => asset.type).sort());
+    expect(recipeTypes).toEqual(EXPANDED_ASSET_LIBRARY.map((asset) => asset.type).filter(type => type !== 'parametric-extrusion').sort());
 
-    for (const asset of EXPANDED_ASSET_LIBRARY) {
+    for (const asset of EXPANDED_ASSET_LIBRARY.filter(asset => asset.type !== 'parametric-extrusion')) {
       expect(isExpandedAssetType(asset.type)).toBe(true);
       const material = new THREE.MeshBasicMaterial();
       const object = createExpandedAsset(asset.type, material);

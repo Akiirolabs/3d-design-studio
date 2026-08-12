@@ -152,7 +152,7 @@ export const Header: React.FC<HeaderProps> = ({
           className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-600 hover:brightness-110 text-white text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-all border border-white/20"
         >
           <Sparkles className="w-3.5 h-3.5 animate-pulse text-amber-300" />
-          AI Scene Copilot
+          A K I I R O AI
         </button>
 
         {/* Cloud Sync Room Button */}

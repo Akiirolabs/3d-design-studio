@@ -4,6 +4,17 @@ export type ViewportRenderMode = 'shaded' | 'wireframe' | 'photoreal' | 'normals
 
 export type EnvironmentTheme = 'studio' | 'sunset' | 'midnight' | 'daylight' | 'warm';
 
+export interface ParametricExtrusionGeometry {
+  kind: 'parametric-extrusion';
+  profile: [number, number][];
+  height: number;
+  baseScale: number;
+  topScale: number;
+  twistAngle: number;
+  twistSteps: number;
+  twistMode: 'steps' | 'smooth';
+}
+
 export type AssetCategory =
   | 'primitives'
   | 'architecture'
@@ -33,6 +44,10 @@ export interface SceneObject {
   visible: boolean;
   locked: boolean;
   parentId?: string | null;
+  geometry?: ParametricExtrusionGeometry;
+  /** A non-destructive Boolean subtraction. The referenced cutter remains in the project. */
+  boolean?: { kind: 'subtract'; cutterId: string };
+  holeForId?: string;
 }
 
 export interface MaterialPreset {

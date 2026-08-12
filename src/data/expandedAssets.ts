@@ -19,6 +19,7 @@ function templates(category: AssetCategory, seeds: readonly CatalogSeed[]): Asse
 
 export const EXPANDED_ASSET_LIBRARY: AssetTemplate[] = [
   ...templates('primitives', [
+    ['parametric-extrusion', 'Parametric Extrusion', 'Editable tapered and twisted extrusion with a closed profile.', ['shape', 'extrude', 'twist', 'taper']],
     ['rounded-box', 'Rounded Box', 'Soft-edged box for printable enclosures.', ['shape', 'rounded', 'box']],
     ['pyramid', 'Square Pyramid', 'Four-sided pyramid primitive.', ['shape', 'pyramid']],
     ['tetrahedron', 'Tetrahedron', 'Four-face regular solid.', ['shape', 'polyhedron']],

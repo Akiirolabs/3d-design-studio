@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Sliders,
   FolderTree,
@@ -12,14 +12,22 @@ import {
   RotateCcw,
   Palette,
 } from 'lucide-react';
-import { SceneObject, EnvironmentSettings } from '../types';
+import { SceneObject, EnvironmentSettings, ParametricExtrusionGeometry } from '../types';
+import { minimumTwistSteps } from '../utils/parametricExtrusion';
+import { createExtrusionInteraction, handleExtrusionRangeKeyDown } from '../utils/extrusionInteraction';
 import { MATERIAL_PRESETS } from '../data/materialPresets';
 
 interface SidebarRightProps {
   objects: SceneObject[];
   selectedObjectId: string | null;
-  onSelectObject: (id: string | null) => void;
+  selectedObjectIds: string[];
+  onSelectObject: (id: string | null, additive?: boolean) => void;
+  onAlignObjects: (axis: 0 | 1 | 2, mode: 'min' | 'center' | 'max') => void;
+  onApplyBoolean: (targetId: string, cutterId: string) => void;
+  onRemoveBoolean: (targetId: string) => void;
+  alignmentIssue: string | null;
   onUpdateObject: (updated: SceneObject) => void;
+  onPreviewObject?: (updated: SceneObject | null) => void;
   onDeleteObject: (id: string) => void;
   onDuplicateObject: (id: string) => void;
   environment: EnvironmentSettings;
@@ -29,16 +37,52 @@ interface SidebarRightProps {
 export const SidebarRight: React.FC<SidebarRightProps> = ({
   objects,
   selectedObjectId,
+  selectedObjectIds,
   onSelectObject,
+  onAlignObjects,
+  onApplyBoolean,
+  onRemoveBoolean,
+  alignmentIssue,
   onUpdateObject,
+  onPreviewObject,
   onDeleteObject,
   onDuplicateObject,
   environment,
   onUpdateEnvironment,
 }) => {
   const [rightTab, setRightTab] = useState<'inspector' | 'outliner' | 'environment'>('inspector');
+  const [markedCutterId, setMarkedCutterId] = useState<string | null>(null);
 
   const selectedObject = objects.find((o) => o.id === selectedObjectId);
+  const [extrusionDraft, setExtrusionDraft] = useState<ParametricExtrusionGeometry | null>(null);
+  const selectedRef = useRef(selectedObject);
+  const draftRef = useRef(extrusionDraft);
+  const previewCallbackRef = useRef(onPreviewObject);
+  const commitCallbackRef = useRef(onUpdateObject);
+  selectedRef.current = selectedObject;
+  draftRef.current = extrusionDraft;
+  previewCallbackRef.current = onPreviewObject;
+  commitCallbackRef.current = onUpdateObject;
+  const interactionRef = useRef<ReturnType<typeof createExtrusionInteraction> | null>(null);
+  if (!interactionRef.current) interactionRef.current = createExtrusionInteraction({
+    getSelected: () => selectedRef.current,
+    getDraft: () => draftRef.current,
+    setDraft: draft => { draftRef.current = draft; setExtrusionDraft(draft); },
+    preview: object => previewCallbackRef.current?.(object),
+    commit: object => commitCallbackRef.current(object),
+    requestFrame: callback => requestAnimationFrame(callback),
+    cancelFrame: handle => cancelAnimationFrame(handle),
+  });
+  useEffect(() => () => interactionRef.current?.dispose(), []);
+  useEffect(() => {
+    const next = selectedObject?.geometry ?? null;
+    draftRef.current = next;
+    setExtrusionDraft(next);
+  }, [selectedObject?.id, selectedObject?.geometry]);
+
+  const previewExtrusion = (patch: Partial<ParametricExtrusionGeometry>) => interactionRef.current?.preview(patch);
+  const commitExtrusion = () => interactionRef.current?.commit();
+  const cancelExtrusion = () => interactionRef.current?.cancel();
 
   const handlePositionChange = (axisIndex: number, val: number) => {
     if (!selectedObject) return;
@@ -122,7 +166,29 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
         <div className="flex-1 overflow-y-auto p-4 space-y-5 no-scrollbar">
           {selectedObject ? (
             <div className="space-y-4">
+              {selectedObjectIds.length >= 2 && (
+                <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-2" aria-label="Align selected object pivots">
+                  <div className="flex justify-between text-[10px] uppercase tracking-wide text-slate-400">
+                    <span>Align pivots</span><span>{selectedObjectIds.length} selected</span>
+                  </div>
+                  {[0, 1, 2].map(axis => (
+                    <div key={axis} className="grid grid-cols-4 gap-1 text-[10px]">
+                      <span className="py-1 text-slate-500">{'XYZ'[axis]}</span>
+                      {(['min', 'center', 'max'] as const).map(mode => (
+                        <button key={mode} disabled={Boolean(alignmentIssue)} onClick={() => onAlignObjects(axis as 0 | 1 | 2, mode)} className="rounded bg-slate-800 px-1 py-1 text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40" title={alignmentIssue ?? `Align ${mode} ${'XYZ'[axis]} pivots`}>
+                          {mode === 'center' ? 'Ctr' : mode[0].toUpperCase() + mode.slice(1)}
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                  {alignmentIssue && <p role="status" className="text-[10px] text-amber-300">{alignmentIssue}</p>}
+                </div>
+              )}
               {/* Object Header & Controls */}
+              <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-400">
+                <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 font-semibold text-cyan-300">Primary</span>
+                <span>Inspector edits this object</span>
+              </div>
               <div className="flex items-center justify-between bg-slate-950 p-2.5 rounded-xl border border-slate-800">
                 <input
                   type="text"
@@ -132,30 +198,38 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                 />
                 <div className="flex items-center gap-1">
                   <button
+                    type="button"
                     onClick={() => onUpdateObject({ ...selectedObject, visible: !selectedObject.visible })}
                     className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
-                    title={selectedObject.visible ? 'Hide Object' : 'Show Object'}
+                    aria-label={`${selectedObject.visible ? 'Hide' : 'Show'} ${selectedObject.name}`}
+                    title={`${selectedObject.visible ? 'Hide' : 'Show'} ${selectedObject.name}`}
                   >
                     {selectedObject.visible ? <Eye className="w-4 h-4 text-emerald-400" /> : <EyeOff className="w-4 h-4 text-slate-600" />}
                   </button>
                   <button
+                    type="button"
                     onClick={() => onUpdateObject({ ...selectedObject, locked: !selectedObject.locked })}
                     className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
-                    title={selectedObject.locked ? 'Unlock Gizmo' : 'Lock Position'}
+                    aria-label={`${selectedObject.locked ? 'Unlock' : 'Lock'} ${selectedObject.name}`}
+                    title={`${selectedObject.locked ? 'Unlock' : 'Lock'} ${selectedObject.name}`}
                   >
                     {selectedObject.locked ? <Lock className="w-4 h-4 text-amber-400" /> : <Unlock className="w-4 h-4" />}
                   </button>
                   <button
+                    type="button"
                     onClick={() => onDuplicateObject(selectedObject.id)}
                     className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
-                    title="Duplicate Object (Ctrl+D)"
+                    aria-label={`Duplicate ${selectedObject.name}`}
+                    title={`Duplicate ${selectedObject.name} (Ctrl+D)`}
                   >
                     <Copy className="w-4 h-4 text-sky-400" />
                   </button>
                   <button
+                    type="button"
                     onClick={() => onDeleteObject(selectedObject.id)}
                     className="p-1.5 rounded hover:bg-slate-800 text-rose-400 hover:text-rose-300"
-                    title="Delete Object"
+                    aria-label={`Delete ${selectedObject.name}`}
+                    title={`Delete ${selectedObject.name}`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -245,6 +319,54 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                   ))}
                 </div>
               </div>
+
+              {/* PBR Material & Color Section */}
+              <div className="space-y-2 pt-3 border-t border-slate-800/80">
+                <span className="text-xs font-bold text-slate-200">Boolean Hole</span>
+                {selectedObject.boolean ? (
+                  <>
+                    <p className="text-[10px] text-slate-400">One editable hole/cutter is supported per target. Remove this hole to restore the cutter before choosing a replacement.</p>
+                    <button aria-label="Remove Boolean hole" onClick={() => onRemoveBoolean(selectedObject.id)} className="w-full rounded-lg border border-amber-600/60 px-2 py-1.5 text-xs text-amber-300">Remove Hole & Restore Cutter</button>
+                  </>
+                ) : selectedObjectIds.length === 2 ? (
+                  <>
+                    <p className="text-[10px] text-slate-400">Primary: {selectedObject.name}. The other selected solid becomes the recoverable cutter.</p>
+                    <button aria-label="Mark secondary selection as hole" onClick={() => setMarkedCutterId(selectedObjectIds.find(id => id !== selectedObject.id) ?? null)} className="w-full rounded-lg border border-sky-700 px-2 py-1.5 text-xs text-sky-300">Mark as Hole</button>
+                    <button aria-label="Apply Boolean subtraction" disabled={!markedCutterId || !selectedObjectIds.includes(markedCutterId)} onClick={() => { if(markedCutterId) { onApplyBoolean(selectedObject.id, markedCutterId); setMarkedCutterId(null); } }} className="w-full rounded-lg bg-sky-600 disabled:opacity-40 px-2 py-1.5 text-xs font-semibold text-white">Apply Subtraction</button>
+                  </>
+                ) : <p className="text-[10px] text-slate-500">Shift-select exactly two supported solids. The primary object is the target.</p>}
+              </div>
+
+              {/* PBR Material & Color Section */}
+              {selectedObject.geometry?.kind === 'parametric-extrusion' && extrusionDraft && (
+                <div className="space-y-3 pt-3 border-t border-slate-800/80">
+                  <span className="text-xs font-bold text-slate-200">Parametric Extrusion</span>
+                  {([
+                    ['Height', 'height', 0.1, 1000, 0.1],
+                    ['Base Scale', 'baseScale', 0.1, 5, 0.05],
+                    ['Top Scale', 'topScale', 0.1, 5, 0.05],
+                    ['Twist', 'twistAngle', -360, 360, 1],
+                    ['Twist Steps', 'twistSteps', minimumTwistSteps(extrusionDraft.twistAngle), 128, 1],
+                  ] as const).map(([label,key,min,max,step]) => (
+                    <label key={key} className="block text-[11px] text-slate-400">
+                      <span className="flex justify-between"><span>{label}</span><span className="font-mono">{extrusionDraft[key]}</span></span>
+                      <input aria-label={label} aria-valuetext={String(extrusionDraft[key])} type="range" min={min} max={max} step={step} value={extrusionDraft[key]}
+                        onChange={e=>previewExtrusion({[key]: key==='twistSteps'?Math.round(Number(e.target.value)):Number(e.target.value)})}
+                        onPointerUp={commitExtrusion} onPointerCancel={cancelExtrusion} onBlur={commitExtrusion}
+                        onKeyDown={event=>handleExtrusionRangeKeyDown(event, cancelExtrusion)}
+                        className="w-full accent-sky-500" />
+                    </label>
+                  ))}
+                  <label className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Surface shading</span>
+                    <select aria-label="Twist Mode" value={extrusionDraft.twistMode} onChange={e=>{
+                      const next={...extrusionDraft,twistMode:e.target.value as 'steps'|'smooth'}; setExtrusionDraft(next); onUpdateObject({...selectedObject,geometry:next});
+                    }} className="bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200">
+                      <option value="smooth">Smooth</option><option value="steps">Steps</option>
+                    </select>
+                  </label>
+                </div>
+              )}
 
               {/* PBR Material & Color Section */}
               <div className="space-y-3 pt-3 border-t border-slate-800/80">
@@ -357,37 +479,63 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
       {/* TAB 2: OUTLINER (SCENE GRAPH TREE) */}
       {rightTab === 'outliner' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5 no-scrollbar">
+          <p id="outliner-selection-help" className="px-1 pb-1 text-[10px] text-slate-500">Shift-click or use Shift+Enter/Space to select multiple. Cyan is primary; purple is additional.</p>
           {objects.length === 0 ? (
             <div className="text-center py-12 text-xs text-slate-500">Scene is currently empty.</div>
           ) : (
             objects.map((obj) => (
               <div
                 key={obj.id}
-                onClick={() => onSelectObject(obj.id)}
                 className={`flex items-center justify-between p-2 rounded-xl border text-xs cursor-pointer transition-all ${
-                  selectedObjectId === obj.id
+                  selectedObjectIds.includes(obj.id)
                     ? 'bg-sky-500/15 border-sky-500 text-sky-200 font-semibold shadow-sm'
                     : 'bg-slate-950/50 border-slate-800/80 text-slate-300 hover:bg-slate-800/60'
                 }`}
               >
-                <div className="flex items-center gap-2 truncate">
+                <button
+                  type="button"
+                  aria-label={`${obj.name}${obj.id === selectedObjectId ? ', primary object' : ''}`}
+                  aria-describedby="outliner-selection-help"
+                  aria-pressed={selectedObjectIds.includes(obj.id)}
+                  onClick={(event) => onSelectObject(obj.id, event.shiftKey)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    onSelectObject(obj.id, event.shiftKey);
+                  }}
+                  title={`Select ${obj.name}${selectedObjectIds.includes(obj.id) ? ' (selected)' : ''}`}
+                  className="flex min-w-0 flex-1 items-center gap-2 truncate text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                >
                   <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: obj.color }} />
                   <span className="truncate">{obj.name}</span>
-                </div>
+                  {obj.id === selectedObjectId && <span className="rounded bg-cyan-500/20 px-1 text-[9px] uppercase text-cyan-300">Primary</span>}
+                </button>
                 <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                   <button
+                    type="button"
                     onClick={() => onUpdateObject({ ...obj, visible: !obj.visible })}
                     className="p-1 text-slate-400 hover:text-slate-100"
+                    aria-label={`${obj.visible ? 'Hide' : 'Show'} ${obj.name}`}
+                    title={`${obj.visible ? 'Hide' : 'Show'} ${obj.name}`}
                   >
                     {obj.visible ? <Eye className="w-3.5 h-3.5 text-emerald-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-600" />}
                   </button>
                   <button
+                    type="button"
                     onClick={() => onUpdateObject({ ...obj, locked: !obj.locked })}
                     className="p-1 text-slate-400 hover:text-slate-100"
+                    aria-label={`${obj.locked ? 'Unlock' : 'Lock'} ${obj.name}`}
+                    title={`${obj.locked ? 'Unlock' : 'Lock'} ${obj.name}`}
                   >
                     {obj.locked ? <Lock className="w-3.5 h-3.5 text-amber-400" /> : <Unlock className="w-3.5 h-3.5" />}
                   </button>
-                  <button onClick={() => onDeleteObject(obj.id)} className="p-1 text-rose-400 hover:text-rose-300">
+                  <button
+                    type="button"
+                    onClick={() => onDeleteObject(obj.id)}
+                    className="p-1 text-rose-400 hover:text-rose-300"
+                    aria-label={`Delete ${obj.name}`}
+                    title={`Delete ${obj.name}`}
+                  >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>

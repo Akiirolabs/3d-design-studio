@@ -1,0 +1,4 @@
+interface:
+  display_name: "DevAudit"
+  short_description: "Audit competitors and test plausible product gaps"
+  default_prompt: "Use $dev-audit to test the app and identify plausible feature gaps against affordable competitors."

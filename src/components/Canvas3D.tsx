@@ -13,11 +13,15 @@ import { disposeMaterials, disposeObject3DResources } from '../utils/threeResour
 import { canTransformSelection, configureTransformSnapping, createFrameCoalescer, getDragTransition } from '../utils/transformControls';
 import { viewportInputPolicy } from '../utils/modalKeyboard';
 import { createExpandedAsset, isExpandedAssetType } from '../utils/expandedAssetGeometry';
+import { createParametricExtrusionGeometry, parametricExtrusionKey } from '../utils/parametricExtrusion';
+import { syncExtrusionGeometry } from '../utils/extrusionSceneSync';
+import { booleanGeometryKey, createSubtractedGeometry } from '../utils/booleanGeometry';
 
 interface Canvas3DProps {
   objects: SceneObject[];
   selectedObjectId: string | null;
-  onSelectObject: (id: string | null) => void;
+  selectedObjectIds: string[];
+  onSelectObject: (id: string | null, additive?: boolean) => void;
   onUpdateObjectTransform: (
     id: string,
     position: [number, number, number],
@@ -35,11 +39,13 @@ interface Canvas3DProps {
   renderMode: ViewportRenderMode;
   onRegisterRenderer: (renderer: THREE.WebGLRenderer, scene: THREE.Scene) => void;
   shortcutsDisabled?: boolean;
+  onModelingNotice?: (message: string) => void;
 }
 
 export const Canvas3D: React.FC<Canvas3DProps> = ({
   objects,
   selectedObjectId,
+  selectedObjectIds,
   onSelectObject,
   onUpdateObjectTransform,
   onLiveUpdateObjectTransform,
@@ -48,6 +54,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   renderMode,
   onRegisterRenderer,
   shortcutsDisabled = false,
+  onModelingNotice,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -60,12 +67,13 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   const isTransformingRef = useRef<boolean>(false);
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const ambientLightRef = useRef<THREE.AmbientLight | null>(null);
-  const selectionBoxRef = useRef<THREE.BoxHelper | null>(null);
+  const selectionBoxesRef = useRef<Map<string, THREE.BoxHelper>>(new Map());
   const shortcutsDisabledRef = useRef(shortcutsDisabled);
 
   // Keep fresh references to transform callbacks to avoid stale listeners
   const onUpdateTransformRef = useRef(onUpdateObjectTransform);
   const onLiveTransformRef = useRef(onLiveUpdateObjectTransform);
+  const onModelingNoticeRef = useRef(onModelingNotice);
 
   useEffect(() => {
     onUpdateTransformRef.current = onUpdateObjectTransform;
@@ -74,6 +82,8 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   useEffect(() => {
     onLiveTransformRef.current = onLiveUpdateObjectTransform;
   }, [onLiveUpdateObjectTransform]);
+
+  useEffect(() => { onModelingNoticeRef.current=onModelingNotice; }, [onModelingNotice]);
 
   useEffect(() => {
     shortcutsDisabledRef.current = shortcutsDisabled;
@@ -289,9 +299,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
       orbitControls.update();
-      if (selectionBoxRef.current && selectionBoxRef.current.visible) {
-        selectionBoxRef.current.update();
-      }
+      selectionBoxesRef.current.forEach(box => box.update());
       renderer.render(scene, camera);
     };
     animate();
@@ -329,12 +337,12 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
         disposeObject3DResources(object);
       });
       meshMapRef.current.clear();
-      if (selectionBoxRef.current) {
-        scene.remove(selectionBoxRef.current);
-        selectionBoxRef.current.geometry.dispose();
-        disposeMaterials([selectionBoxRef.current.material]);
-        selectionBoxRef.current = null;
-      }
+      selectionBoxesRef.current.forEach(box => {
+        scene.remove(box);
+        box.geometry.dispose();
+        disposeMaterials([box.material]);
+      });
+      selectionBoxesRef.current.clear();
       scene.remove(gridHelper);
       gridHelper.geometry.dispose();
       disposeMaterials(Array.isArray(gridHelper.material) ? gridHelper.material : [gridHelper.material]);
@@ -420,20 +428,28 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     objects.forEach((objData) => {
       let object3D = existingMap.get(objData.id);
 
-      // Recreate if not present or primitive type changed
-      if (!object3D || object3D.userData.type !== objData.type) {
-        if (object3D) {
-          if (transformControlsRef.current?.object === object3D) {
-            transformControlsRef.current.detach();
-          }
-          scene.remove(object3D);
-          disposeObject3DResources(object3D);
+      const cutter = objData.boolean ? objects.find(candidate => candidate.id === objData.boolean!.cutterId) : undefined;
+      const nextGeometryKey = objData.boolean&&cutter
+        ? booleanGeometryKey(objData,cutter)
+        : JSON.stringify({ geometry: objData.geometry ? parametricExtrusionKey(objData.geometry) : '', boolean: objData.boolean });
+      // Keep the last evaluated solid during a gizmo preview. The committed
+      // state update below triggers exactly one Boolean recomputation.
+      const geometryKey = isTransformingRef.current&&objData.boolean&&object3D ? object3D.userData.geometryKey : nextGeometryKey;
+      if (object3D && object3D.userData.type === 'parametric-extrusion' && objData.geometry && object3D.userData.geometryKey !== geometryKey) {
+        syncExtrusionGeometry(object3D, objData.geometry);
+      }
+      // Recreate if not present, primitive type changed, or procedural parameters changed.
+      if (!object3D || object3D.userData.type !== objData.type || object3D.userData.geometryKey !== geometryKey) {
+        try {
+          const replacement=createProcedural3DObject(objData,renderMode,cutter);
+          replacement.userData={id:objData.id,type:objData.type,geometryKey};
+          replacement.name=`user_object_${objData.id}`;
+          if(object3D){if(transformControlsRef.current?.object===object3D)transformControlsRef.current.detach();scene.remove(object3D);disposeObject3DResources(object3D);}
+          object3D=replacement;scene.add(object3D);existingMap.set(objData.id,object3D);
+        } catch(error) {
+          onModelingNoticeRef.current?.(`Boolean preview retained its last valid shape: ${error instanceof Error?error.message:'evaluation failed.'}`);
+          if(!object3D){object3D=createProcedural3DObject({...objData,boolean:undefined},renderMode);object3D.userData={id:objData.id,type:objData.type,geometryKey:'fallback'};object3D.name=`user_object_${objData.id}`;scene.add(object3D);existingMap.set(objData.id,object3D);}
         }
-        object3D = createProcedural3DObject(objData, renderMode);
-        object3D.userData = { id: objData.id, type: objData.type };
-        object3D.name = `user_object_${objData.id}`;
-        scene.add(object3D);
-        existingMap.set(objData.id, object3D);
       }
 
       // Update transform if not actively dragging gizmo
@@ -454,7 +470,34 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       updateObjectMaterials(object3D, objData, renderMode);
     });
 
-    // Attach/Detach Gizmo and Wireframe Selection Box
+    // Attach the gizmo only to the primary object. Every selected object gets a
+    // non-invasive helper, so multi-selection never mutates object transforms.
+    selectionBoxesRef.current.forEach((box, id) => {
+      const data = objects.find(candidate => candidate.id === id);
+      if (!selectedObjectIds.includes(id) || !existingMap.has(id) || !data?.visible) {
+        scene.remove(box);
+        box.geometry.dispose();
+        disposeMaterials([box.material]);
+        selectionBoxesRef.current.delete(id);
+      }
+    });
+    selectedObjectIds.forEach(id => {
+      const object = existingMap.get(id);
+      const data = objects.find(candidate => candidate.id === id);
+      if (!object || !data?.visible) return;
+      let box = selectionBoxesRef.current.get(id);
+      if (!box) {
+        box = new THREE.BoxHelper(object, id === selectedObjectId ? 0x06b6d4 : 0xa855f7);
+        scene.add(box);
+        selectionBoxesRef.current.set(id, box);
+      } else {
+        box.setFromObject(object);
+        (box.material as THREE.LineBasicMaterial).color.setHex(id === selectedObjectId ? 0x06b6d4 : 0xa855f7);
+      }
+      box.update();
+    });
+
+    // Attach/Detach Gizmo for the explicit primary selection.
     if (selectedObjectId) {
       const selectedMesh = existingMap.get(selectedObjectId);
       const selData = objects.find((o) => o.id === selectedObjectId);
@@ -466,25 +509,13 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
           transformControlsRef.current?.attach(selectedMesh);
         }
 
-        // Attach or update persistent wireframe box
-        if (!selectionBoxRef.current) {
-          const box = new THREE.BoxHelper(selectedMesh, 0x06b6d4); // Cyan wireframe highlight
-          scene.add(box);
-          selectionBoxRef.current = box;
-        } else {
-          selectionBoxRef.current.setFromObject(selectedMesh);
-          selectionBoxRef.current.visible = true;
-        }
-        selectionBoxRef.current.update();
       } else {
         transformControlsRef.current?.detach();
-        if (selectionBoxRef.current) selectionBoxRef.current.visible = false;
       }
     } else {
       transformControlsRef.current?.detach();
-      if (selectionBoxRef.current) selectionBoxRef.current.visible = false;
     }
-  }, [objects, selectedObjectId, renderMode]);
+  }, [objects, selectedObjectId, selectedObjectIds, renderMode]);
 
   // Click & Raycasting Selection
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -525,12 +556,12 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
         topObj = topObj.parent;
       }
       if (topObj.userData.id) {
-        onSelectObject(topObj.userData.id);
+        onSelectObject(topObj.userData.id, event.shiftKey);
         return;
       }
     }
     // Deselect if background clicked with left click
-    onSelectObject(null);
+    onSelectObject(null, event.shiftKey);
   };
 
   return (
@@ -566,7 +597,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
 /**
  * Creates procedural 3D Three.js Object groups/meshes for rich architectural assets
  */
-function createProcedural3DObject(data: SceneObject, renderMode: ViewportRenderMode): THREE.Object3D {
+function createProcedural3DObject(data: SceneObject, renderMode: ViewportRenderMode, cutter?: SceneObject): THREE.Object3D {
   const group = new THREE.Group();
   group.position.set(...data.position);
   group.rotation.set(
@@ -578,7 +609,18 @@ function createProcedural3DObject(data: SceneObject, renderMode: ViewportRenderM
 
   const mat = getMaterialForData(data, renderMode);
 
+  if (data.boolean?.kind === 'subtract') {
+    if (!cutter) throw new Error('Boolean cutter is missing.');
+    const mesh = new THREE.Mesh(createSubtractedGeometry(data, cutter), mat);
+    mesh.castShadow = true; mesh.receiveShadow = true; group.add(mesh); return group;
+  }
+
   switch (data.type) {
+    case 'parametric-extrusion': {
+      if (!data.geometry) throw new Error('Parametric extrusion data is missing.');
+      const mesh = new THREE.Mesh(createParametricExtrusionGeometry(data.geometry), mat);
+      mesh.castShadow = true; mesh.receiveShadow = true; group.add(mesh); break;
+    }
     case 'cube': {
       const geo = new THREE.BoxGeometry(1, 1, 1);
       const mesh = new THREE.Mesh(geo, mat);

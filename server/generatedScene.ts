@@ -1,5 +1,6 @@
 import { ASSET_LIBRARY } from '../src/data/assetsLibrary';
 import { getAssetCategory } from '../src/utils/assetCatalog';
+import { DEFAULT_PARAMETRIC_EXTRUSION } from '../src/utils/parametricExtrusion';
 
 export const AI_ASSET_TYPES = Object.freeze(ASSET_LIBRARY.map((asset) => asset.type));
 
@@ -17,7 +18,7 @@ export function normalizeGeneratedScene(value: unknown): Record<string, unknown>
       if (typeof object.type !== 'string') throw new Error(`Generated object ${index + 1} has no asset type.`);
       const category = getAssetCategory(object.type);
       if (!category) throw new Error(`Generated object ${index + 1} has unsupported asset type "${object.type}".`);
-      return { ...object, category };
+      return { ...object, category, ...(object.type === 'parametric-extrusion' && object.geometry === undefined ? { geometry: DEFAULT_PARAMETRIC_EXTRUSION } : {}) };
     }),
   };
 }
