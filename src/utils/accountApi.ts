@@ -46,6 +46,7 @@ export const accountApi = {
   importProjects: (projects: ProjectData[]) => request<{ imported: string[]; skipped: string[] }>('/projects/import', { method: 'POST', body: JSON.stringify({ projects }) }),
   snapshots: () => request<{snapshots:NamedSnapshot[];skippedCorrupt?:string[]}>('/snapshots'),
   createSnapshot: (name:string,project:ProjectData) => request<{snapshot:NamedSnapshot}>('/snapshots',{method:'POST',body:JSON.stringify({name,project})}),
+  renameSnapshot: (id:string,name:string) => request<{snapshot:NamedSnapshot}>(`/snapshots/${encodeURIComponent(id)}`,{method:'PATCH',body:JSON.stringify({name})}),
   deleteSnapshot: (id:string) => request<void>(`/snapshots/${encodeURIComponent(id)}`,{method:'DELETE'}),
   currentWorkspace: () => request<{project:ProjectData|null;updatedAt?:string}>('/current-workspace'),
   saveCurrentWorkspace: (project:ProjectData, signal?:AbortSignal) => request<{project:ProjectData;updatedAt:string}>('/current-workspace',{method:'PUT',body:JSON.stringify(project),signal}),

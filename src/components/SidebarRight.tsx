@@ -12,13 +12,21 @@ import {
   RotateCcw,
   Palette,
 } from 'lucide-react';
-import { SceneObject, EnvironmentSettings, ParametricExtrusionGeometry } from '../types';
+import { SceneObject, EnvironmentSettings, ParametricExtrusionGeometry, ObjectGroup } from '../types';
 import { minimumTwistSteps } from '../utils/parametricExtrusion';
 import { createExtrusionInteraction, handleExtrusionRangeKeyDown } from '../utils/extrusionInteraction';
 import { MATERIAL_PRESETS } from '../data/materialPresets';
 
+const GroupOutlinerRow:React.FC<{group:ObjectGroup;onSelect:()=>void;onUpdate:(group:ObjectGroup)=>void;onDelete:()=>void;onDuplicate:()=>void}>=({group,onSelect,onUpdate,onDelete,onDuplicate})=>{
+  const [draft,setDraft]=useState(group.name),committed=useRef(group.name),ignoreBlur=useRef(false);
+  useEffect(()=>{setDraft(group.name);committed.current=group.name;},[group.name]);
+  const commit=()=>{if(ignoreBlur.current){ignoreBlur.current=false;return;}const value=draft.trim();if(value.length<1||value.length>80){setDraft(committed.current);return;}if(value!==committed.current){committed.current=value;onUpdate({...group,name:value});}setDraft(value);};
+  return <div className="rounded-xl border border-violet-700/60 bg-violet-950/30 p-2 text-xs"><div className="flex items-center gap-2"><button className="min-w-0 flex-1 text-left font-semibold text-violet-200" onClick={onSelect}>{group.name} ({group.memberIds.length})</button><button aria-label={`Toggle ${group.name} visibility`} onClick={()=>onUpdate({...group,visible:!group.visible})}>{group.visible?<Eye className="h-3.5 w-3.5"/>:<EyeOff className="h-3.5 w-3.5"/>}</button><button aria-label={`Toggle ${group.name} lock`} onClick={()=>onUpdate({...group,locked:!group.locked})}>{group.locked?<Lock className="h-3.5 w-3.5"/>:<Unlock className="h-3.5 w-3.5"/>}</button><button aria-label={`Duplicate ${group.name}`} onClick={onDuplicate}><Copy className="h-3.5 w-3.5"/></button><button aria-label={`Delete ${group.name}`} onClick={onDelete}><Trash2 className="h-3.5 w-3.5 text-rose-400"/></button></div><input aria-label={`Rename ${group.name}`} value={draft} maxLength={80} onChange={event=>setDraft(event.target.value)} onBlur={commit} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();(event.currentTarget as HTMLInputElement).blur();}else if(event.key==='Escape'){event.preventDefault();ignoreBlur.current=true;setDraft(committed.current);(event.currentTarget as HTMLInputElement).blur();}}} className="mt-2 w-full rounded border border-violet-800 bg-slate-950 px-2 py-1"/></div>;
+};
+
 interface SidebarRightProps {
   objects: SceneObject[];
+  groups:ObjectGroup[];
   selectedObjectId: string | null;
   selectedObjectIds: string[];
   onSelectObject: (id: string | null, additive?: boolean) => void;
@@ -26,6 +34,13 @@ interface SidebarRightProps {
   onApplyBoolean: (targetId: string, cutterId: string) => void;
   onRemoveBoolean: (targetId: string) => void;
   alignmentIssue: string | null;
+  onGroupObjects:()=>void;
+  onUngroupObjects:()=>void;
+  onSelectGroup:(group:ObjectGroup)=>void;
+  onUpdateGroup:(group:ObjectGroup)=>void;
+  onDeleteGroup:(group:ObjectGroup)=>void;
+  onDuplicateGroup:(group:ObjectGroup)=>void;
+  onTransformGroup:(groupId:string,position:[number,number,number],rotation:[number,number,number],scale:[number,number,number])=>void;
   onUpdateObject: (updated: SceneObject) => void;
   onPreviewObject?: (updated: SceneObject | null) => void;
   onDeleteObject: (id: string) => void;
@@ -36,6 +51,7 @@ interface SidebarRightProps {
 
 export const SidebarRight: React.FC<SidebarRightProps> = ({
   objects,
+  groups,
   selectedObjectId,
   selectedObjectIds,
   onSelectObject,
@@ -43,6 +59,9 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
   onApplyBoolean,
   onRemoveBoolean,
   alignmentIssue,
+  onGroupObjects,
+  onUngroupObjects,
+  onSelectGroup,onUpdateGroup,onDeleteGroup,onDuplicateGroup,onTransformGroup,
   onUpdateObject,
   onPreviewObject,
   onDeleteObject,
@@ -54,6 +73,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
   const [markedCutterId, setMarkedCutterId] = useState<string | null>(null);
 
   const selectedObject = objects.find((o) => o.id === selectedObjectId);
+  const selectedGroup=groups.find(group=>group.memberIds.length===selectedObjectIds.length&&group.memberIds.every(id=>selectedObjectIds.includes(id)));
   const [extrusionDraft, setExtrusionDraft] = useState<ParametricExtrusionGeometry | null>(null);
   const selectedRef = useRef(selectedObject);
   const draftRef = useRef(extrusionDraft);
@@ -85,6 +105,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
   const cancelExtrusion = () => interactionRef.current?.cancel();
 
   const handlePositionChange = (axisIndex: number, val: number) => {
+    if(selectedGroup)return;
     if (!selectedObject) return;
     const newPos = [...selectedObject.position] as [number, number, number];
     newPos[axisIndex] = val;
@@ -92,6 +113,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
   };
 
   const handleRotationChange = (axisIndex: number, val: number) => {
+    if(selectedGroup)return;
     if (!selectedObject) return;
     const newRot = [...selectedObject.rotation] as [number, number, number];
     newRot[axisIndex] = val;
@@ -99,6 +121,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
   };
 
   const handleScaleChange = (axisIndex: number, val: number) => {
+    if(selectedGroup)return;
     if (!selectedObject) return;
     const newScl = [...selectedObject.scale] as [number, number, number];
     newScl[axisIndex] = Math.max(0.01, val);
@@ -165,9 +188,11 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
       {rightTab === 'inspector' && (
         <div className="flex-1 overflow-y-auto p-4 space-y-5 no-scrollbar">
           {selectedObject ? (
-            <div className="space-y-4">
+            <div className={`space-y-4 ${selectedGroup?'[&>*:not(:first-child)]:hidden':''}`}>
+              {selectedGroup&&<div className="rounded-xl border border-violet-700 bg-violet-950/30 p-3"><p className="mb-2 text-xs font-semibold text-violet-200">Group selected · Group Pivot</p><div className="grid grid-cols-3 gap-2">{selectedGroup.pivot.map((value,index)=><label key={index} className="text-[10px] text-slate-400">{'XYZ'[index]}<input type="number" step="0.05" value={value} onChange={event=>{const pivot=[...selectedGroup.pivot] as [number,number,number];pivot[index]=Number(event.target.value);onTransformGroup(selectedGroup.id,pivot,[0,0,0],[1,1,1]);}} className="mt-1 w-full rounded border border-violet-800 bg-slate-950 px-2 py-1 text-xs"/></label>)}</div><p className="mt-2 text-[10px] text-slate-400">Rotate and scale the entire group with the shared viewport gizmo.</p><div className="mt-3"><GroupOutlinerRow group={selectedGroup} onSelect={()=>onSelectGroup(selectedGroup)} onUpdate={onUpdateGroup} onDelete={()=>onDeleteGroup(selectedGroup)} onDuplicate={()=>onDuplicateGroup(selectedGroup)}/><button onClick={onUngroupObjects} className="mt-2 w-full rounded border border-violet-500 px-2 py-1 text-xs text-violet-200">Ungroup</button></div></div>}
               {selectedObjectIds.length >= 2 && (
                 <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 space-y-2" aria-label="Align selected object pivots">
+                  <div className="grid grid-cols-2 gap-2"><button onClick={onGroupObjects} className="rounded bg-violet-600 px-2 py-1 text-xs font-semibold text-white">Group</button><button onClick={onUngroupObjects} className="rounded border border-violet-500 px-2 py-1 text-xs text-violet-200">Ungroup</button></div>
                   <div className="flex justify-between text-[10px] uppercase tracking-wide text-slate-400">
                     <span>Align pivots</span><span>{selectedObjectIds.length} selected</span>
                   </div>
@@ -184,6 +209,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
                   {alignmentIssue && <p role="status" className="text-[10px] text-amber-300">{alignmentIssue}</p>}
                 </div>
               )}
+              {selectedObjectIds.length===1&&groups.some(group=>group.memberIds.includes(selectedObject.id))&&<button onClick={onUngroupObjects} className="w-full rounded border border-violet-500 px-2 py-1 text-xs text-violet-200">Ungroup</button>}
               {/* Object Header & Controls */}
               <div className="flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-400">
                 <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 font-semibold text-cyan-300">Primary</span>
@@ -480,6 +506,7 @@ export const SidebarRight: React.FC<SidebarRightProps> = ({
       {rightTab === 'outliner' && (
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5 no-scrollbar">
           <p id="outliner-selection-help" className="px-1 pb-1 text-[10px] text-slate-500">Shift-click or use Shift+Enter/Space to select multiple. Cyan is primary; purple is additional.</p>
+          {groups.map(group=><GroupOutlinerRow key={group.id} group={group} onSelect={()=>onSelectGroup(group)} onUpdate={onUpdateGroup} onDelete={()=>onDeleteGroup(group)} onDuplicate={()=>onDuplicateGroup(group)}/>)}
           {objects.length === 0 ? (
             <div className="text-center py-12 text-xs text-slate-500">Scene is currently empty.</div>
           ) : (

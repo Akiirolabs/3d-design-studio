@@ -43,11 +43,19 @@ export interface SceneObject {
   intensity?: number; // for lights
   visible: boolean;
   locked: boolean;
-  parentId?: string | null;
   geometry?: ParametricExtrusionGeometry;
   /** A non-destructive Boolean subtraction. The referenced cutter remains in the project. */
   boolean?: { kind: 'subtract'; cutterId: string };
   holeForId?: string;
+}
+
+export interface ObjectGroup {
+  id:string;
+  name:string;
+  memberIds:string[];
+  pivot:[number,number,number];
+  visible:boolean;
+  locked:boolean;
 }
 
 export interface MaterialPreset {
@@ -105,6 +113,7 @@ export interface ProjectData {
   createdAt: string;
   updatedAt: string;
   objects: SceneObject[];
+  groups?: ObjectGroup[];
   environment: EnvironmentSettings;
   thumbnailUrl?: string;
 }

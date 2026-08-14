@@ -42,6 +42,12 @@ describe('account API client', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2,'/api/snapshots/snap%2F1/load',expect.objectContaining({method:'POST'}));
   });
 
+  it('renames an encoded saved-version id without replacing its project',async()=>{
+    const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify({snapshot:{id:'snap/1',name:'Final'}}),{status:200,headers:{'Content-Type':'application/json'}}));
+    vi.stubGlobal('fetch',fetchMock);await accountApi.renameSnapshot('snap/1','Final');
+    expect(fetchMock).toHaveBeenCalledWith('/api/snapshots/snap%2F1',expect.objectContaining({method:'PATCH',body:JSON.stringify({name:'Final'})}));
+  });
+
 });
 
 describe('guest preferences', () => {

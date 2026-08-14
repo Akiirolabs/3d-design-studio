@@ -329,6 +329,9 @@ describe('account and project API', () => {
     const created=await request('/snapshots',{method:'POST',headers:{cookie:alice.cookie},body:JSON.stringify({name:'Before enclosure',project:project('workspace')})});
     expect(created.status).toBe(201);const snapshot=(await created.json()).snapshot;
     expect(snapshot).toMatchObject({name:'Before enclosure',project:{id:'workspace'}});expect(snapshot.id).not.toBe('workspace');
+    const renamed=await request(`/snapshots/${snapshot.id}`,{method:'PATCH',headers:{cookie:alice.cookie},body:JSON.stringify({name:'Enclosure ready'})});
+    expect(renamed.status).toBe(200);expect((await renamed.json()).snapshot).toMatchObject({id:snapshot.id,name:'Enclosure ready',project:{id:'workspace'}});
+    expect((await request(`/snapshots/${snapshot.id}`,{method:'PATCH',headers:{cookie:bob.cookie},body:JSON.stringify({name:'Stolen'})})).status).toBe(404);
     await request('/projects/workspace',{method:'PUT',headers:{cookie:alice.cookie},body:JSON.stringify(project('workspace','Changed workspace'))});
     expect((await (await request('/snapshots',{headers:{cookie:alice.cookie}})).json()).snapshots[0].project.name).toBe('workspace');
     expect((await request(`/snapshots/${snapshot.id}`,{method:'DELETE',headers:{cookie:bob.cookie}})).status).toBe(404);

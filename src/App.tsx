@@ -8,6 +8,7 @@ import {
   ViewportRenderMode,
   AssetTemplate,
   CloudSession,
+  ObjectGroup,
 } from './types';
 import {
   getInitialProject,
@@ -41,6 +42,7 @@ import { commitWithNonfatalRefresh, createLatestAsyncRunner, createPreferenceUpd
 import { alignSelectedObjectPivots, getAlignmentIssue, reconcileSelection, resolvePrimaryActionId, selectObject, type SelectionState } from './utils/multiSelection';
 import { applyBooleanSubtraction, hasBooleanDependency, removeBooleanSubtraction, updateTransformWithBooleanGuard } from './utils/booleanGeometry';
 import {canAutosaveCurrentWorkspace,editorShortcutsDisabled,isActiveHydration,isActiveHydrationOperation,type WorkspaceHydrationStatus} from './utils/accountHydration';
+import { applyMemberDrivenGroupTransform, canTransformGroup, expandGroupedSelection, getGroupingIssue, groupObjects, transformGroupMembers, ungroupObjects } from './utils/objectGrouping';
 
 export default function App() {
   // Main Project State
@@ -56,6 +58,7 @@ export default function App() {
   const selectedObjectId = selection.primaryId;
   const selectedObjectIds = selection.ids;
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
+  const [gizmoDragging,setGizmoDragging]=useState(false);
   const [renderMode, setRenderMode] = useState<ViewportRenderMode>('shaded');
 
   // Three.js References for Exporting & Snapshots
@@ -128,8 +131,11 @@ export default function App() {
   },[applyWorkspace]);
   const handleSelectObject = useCallback((id: string | null, additive = false) => {
     setPreviewObject(null);
+    const currentGroup=(project.groups??[]).find(group=>group.memberIds.length===selection.ids.length&&group.memberIds.every(member=>selection.ids.includes(member)));
+    if(additive&&(currentGroup||id&&expandGroupedSelection(project.groups??[],id))){setModelingNotice('Groups are selected as one unit. Ungroup before combining this selection with other objects.');return;}
+    if(id){const grouped=expandGroupedSelection(project.groups??[],id);if(grouped){setSelection(grouped);return;}}
     setSelection(current => selectObject(current, id, additive));
-  }, []);
+  }, [project.groups,selection.ids]);
 
   const handleAlignObjects = (axis: 0 | 1 | 2, mode: 'min' | 'center' | 'max') => {
     const issue = getAlignmentIssue(project.objects, selectedObjectIds);
@@ -138,8 +144,31 @@ export default function App() {
     if (objects) pushStateToHistory({ ...project, objects });
   };
 
+  const handleGroupObjects=()=>{
+    const groups=project.groups??[],issue=getGroupingIssue(project.objects,groups,selectedObjectIds);if(issue){setModelingNotice(issue);return;}
+    pushStateToHistory({...project,groups:groupObjects(project.objects,groups,selectedObjectIds,`group_${Date.now()}`,`Group ${groups.length+1}`)});
+    setModelingNotice(`${selectedObjectIds.length} objects grouped.`);
+  };
+  const handleUngroupObjects=()=>{
+    const group=(project.groups??[]).find(candidate=>candidate.memberIds.some(id=>selectedObjectIds.includes(id)));
+    if(!group){setModelingNotice('Select an object that belongs to a group.');return;}
+    pushStateToHistory({...project,groups:ungroupObjects(project.groups??[],group.id)});setModelingNotice('Group removed.');
+  };
+  const handleSelectGroup=(group:ObjectGroup)=>setSelection({ids:[...group.memberIds],primaryId:group.memberIds[0]??null});
+  const handleUpdateGroup=(group:ObjectGroup)=>{
+    const previous=(project.groups??[]).find(candidate=>candidate.id===group.id);if(!previous||!group.name.trim())return;
+    const members=new Set(group.memberIds);let objects=project.objects;
+    if(previous.visible!==group.visible)objects=objects.map(object=>members.has(object.id)?{...object,visible:group.visible}:object);
+    if(previous.locked!==group.locked)objects=objects.map(object=>members.has(object.id)?{...object,locked:group.locked}:object);
+    pushStateToHistory({...project,objects,groups:(project.groups??[]).map(candidate=>candidate.id===group.id?group:candidate)});
+  };
+  const handleDeleteGroup=(group:ObjectGroup)=>{if(preferences.confirmDelete&&!window.confirm(`Delete ${group.name} and its ${group.memberIds.length} objects?`))return;const ids=new Set(group.memberIds);const objects=project.objects.filter(object=>!ids.has(object.id));pushStateToHistory({...project,objects,groups:(project.groups??[]).filter(candidate=>candidate.id!==group.id)});setSelection(reconcileSelection(objects,selection,true));};
+  const handleDuplicateGroup=(group:ObjectGroup)=>{const suffix=`_${Date.now()}`,members=project.objects.filter(object=>group.memberIds.includes(object.id)).map(object=>({...structuredClone(object),id:`${object.id}${suffix}`,name:`${object.name} Copy`,position:[object.position[0]+1,object.position[1],object.position[2]+1] as [number,number,number]}));const nextGroup={...group,id:`group${suffix}`,name:`${group.name} Copy`,memberIds:members.map(member=>member.id),pivot:[group.pivot[0]+1,group.pivot[1],group.pivot[2]+1] as [number,number,number]};pushStateToHistory({...project,objects:[...project.objects,...members],groups:[...(project.groups??[]),nextGroup]});handleSelectGroup(nextGroup);};
+  const handleGroupTransform=(groupId:string,position:[number,number,number],rotation:[number,number,number],scale:[number,number,number])=>{const group=(project.groups??[]).find(candidate=>candidate.id===groupId);if(!group)return;const issue=canTransformGroup(project.objects,group);if(issue){setModelingNotice(issue);return;}const transformed=transformGroupMembers(project.objects,group,position,rotation,scale);pushStateToHistory({...project,objects:transformed.objects,groups:(project.groups??[]).map(candidate=>candidate.id===groupId?transformed.group:candidate)});};
+
   const handleApplyBoolean = (targetId: string, cutterId: string) => {
     try {
+      if((project.groups??[]).some(group=>group.memberIds.includes(targetId)||group.memberIds.includes(cutterId)))throw new Error('Ungroup both operands before applying a Boolean hole.');
       const objects = applyBooleanSubtraction(project.objects, targetId, cutterId);
       pushStateToHistory({ ...project, objects });
       setSelection({ ids: [targetId], primaryId: targetId });
@@ -185,14 +214,14 @@ export default function App() {
   }, [preferences.theme, preferences.reducedMotion]);
 
   useEffect(() => {
-    if (!canAutosaveCurrentWorkspace(accountUser?.id,workspaceHydration) || !accountUser || !canPersistProject(previewObject)) return;
+    if (gizmoDragging||!canAutosaveCurrentWorkspace(accountUser?.id,workspaceHydration) || !accountUser || !canPersistProject(previewObject)) return;
     const timer = window.setTimeout(() => {
       void autosaveRunnerRef.current({ project, userId: accountUser.id, session: authSessionRef.current }).catch(error => {
         if (!(error instanceof DOMException && error.name === 'AbortError')) {setAutosaveStatus('Autosave failed — local recovery is safe');setAccountError('Cloud autosave failed. Your local design is safe.');}
       });
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [project, previewObject, accountUser,workspaceHydration]);
+  }, [project, previewObject, accountUser,workspaceHydration,gizmoDragging]);
 
   // Save changes to localStorage & update history stack
   const pushStateToHistory = useCallback(
@@ -275,6 +304,9 @@ export default function App() {
   // Update Object (Transform or Material)
   const handleUpdateObject = (updatedObj: SceneObject) => {
     setPreviewObject(null);
+    const group=(project.groups??[]).find(candidate=>candidate.memberIds.length===selectedObjectIds.length&&candidate.memberIds.every(id=>selectedObjectIds.includes(id)));
+    const current=project.objects.find(object=>object.id===updatedObj.id);
+    if(group&&current&&JSON.stringify([current.position,current.rotation,current.scale])!==JSON.stringify([updatedObj.position,updatedObj.rotation,updatedObj.scale])){setModelingNotice('Use Group Pivot controls or the shared gizmo to transform this group.');return;}
     const updatedObjects = project.objects.map((o) => (o.id === updatedObj.id ? updatedObj : o));
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
@@ -313,9 +345,8 @@ export default function App() {
           return prev;
         }
 
-        const updatedObj = { ...target, position, rotation, scale };
-        const updatedObjects = prev.objects.map((o) => (o.id === id ? updatedObj : o));
-        return { ...prev, objects: updatedObjects };
+        const updated=applyMemberDrivenGroupTransform(prev.objects,prev.groups??[],id,position,rotation,scale);
+        return { ...prev, objects: updated.objects,groups:updated.groups };
       });
     },
     []
@@ -336,7 +367,9 @@ export default function App() {
         setModelingNotice(result.error);
         return false;
       }
-      pushStateToHistory({ ...project, objects: result.objects });
+      const group=(project.groups??[]).find(candidate=>candidate.memberIds.includes(id));
+      const grouped=applyMemberDrivenGroupTransform(project.objects,project.groups??[],id,position,rotation,scale);
+      pushStateToHistory(group?{...project,objects:grouped.objects,groups:grouped.groups}:{ ...project, objects: result.objects });
       return true;
     }
     return false;
@@ -366,6 +399,7 @@ export default function App() {
 
   // Delete Object
   const handleDeleteObject = (id: string) => {
+    if((project.groups??[]).some(group=>group.memberIds.includes(id))){setModelingNotice('Ungroup this object before deleting it.');return;}
     if (preferences.confirmDelete && !window.confirm('Delete this object?')) return;
     const target = project.objects.find(o => o.id === id);
     if (target?.boolean || target?.holeForId || project.objects.some(o => o.boolean?.cutterId === id)) {
@@ -448,10 +482,14 @@ export default function App() {
         handleRedo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
         e.preventDefault();
+        const selectedGroup=(project.groups??[]).find(group=>group.memberIds.length===selection.ids.length&&group.memberIds.every(id=>selection.ids.includes(id)));
+        if(selectedGroup){handleDuplicateGroup(selectedGroup);return;}
         const primaryId = resolvePrimaryActionId(project.objects, selection);
         if (primaryId) handleDuplicateObject(primaryId);
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
+        const selectedGroup=(project.groups??[]).find(group=>group.memberIds.length===selection.ids.length&&group.memberIds.every(id=>selection.ids.includes(id)));
+        if(selectedGroup){handleDeleteGroup(selectedGroup);return;}
         const primaryId = resolvePrimaryActionId(project.objects, selection);
         if (primaryId) handleDeleteObject(primaryId);
       } else if (e.key.toLowerCase() === 'g' || e.key.toLowerCase() === 't') {
@@ -509,11 +547,14 @@ export default function App() {
         <main className="flex-1 h-full relative">
           <Canvas3D
             objects={objectsWithPreview(project, previewObject)}
+            groups={project.groups??[]}
             selectedObjectId={selectedObjectId}
             selectedObjectIds={selectedObjectIds}
             onSelectObject={handleSelectObject}
             onUpdateObjectTransform={handleUpdateObjectTransform}
             onLiveUpdateObjectTransform={handleLiveUpdateObjectTransform}
+            onTransformingChange={setGizmoDragging}
+            onUpdateGroupTransform={handleGroupTransform}
             environment={project.environment}
             transformMode={transformMode}
             renderMode={renderMode}
@@ -526,6 +567,7 @@ export default function App() {
         {/* Right Inspector & Hierarchy Panel */}
         <SidebarRight
           objects={project.objects}
+          groups={project.groups??[]}
           selectedObjectId={selectedObjectId}
           selectedObjectIds={selectedObjectIds}
           onSelectObject={handleSelectObject}
@@ -533,6 +575,13 @@ export default function App() {
           onApplyBoolean={handleApplyBoolean}
           onRemoveBoolean={handleRemoveBoolean}
           alignmentIssue={getAlignmentIssue(project.objects, selectedObjectIds)}
+          onGroupObjects={handleGroupObjects}
+          onUngroupObjects={handleUngroupObjects}
+          onSelectGroup={handleSelectGroup}
+          onUpdateGroup={handleUpdateGroup}
+          onDeleteGroup={handleDeleteGroup}
+          onDuplicateGroup={handleDuplicateGroup}
+          onTransformGroup={handleGroupTransform}
           onUpdateObject={handleUpdateObject}
           onPreviewObject={handlePreviewObject}
           onDeleteObject={handleDeleteObject}
@@ -595,6 +644,7 @@ export default function App() {
       />
       <SavedVersionsModal isOpen={cloudSyncOpen} onClose={()=>setCloudSyncOpen(false)} returnFocusRef={cloudButtonRef} authenticated={Boolean(accountUser)} snapshots={snapshots} loading={snapshotsLoading} corruptCount={snapshotCorruptCount} busy={accountBusy} error={accountError} notice={accountNotice} currentProjectName={project.name} autosaveStatus={autosaveStatus} workspaceReady={workspaceHydration==='ready'} canRetryHydration={workspaceHydration==='failed'} onRetryHydration={async()=>{if(accountUser)await hydrateCurrentWorkspace(accountUser);}}
         onCreateSnapshot={async name=>{if(workspaceHydration!=='ready')return false;setAccountBusy(true);setAccountError(null);setAccountNotice(null);try{if(workspaceHydration!=='ready')return false;await commitWithNonfatalRefresh(()=>accountApi.createSnapshot(name,structuredClone(project)),result=>setSnapshots(current=>upsertSnapshot(current,result.snapshot)),refreshCloudProjects);setAccountNotice('Version saved.');return true;}catch(error){setAccountError(error instanceof Error?error.message:'Could not save version.');return false;}finally{setAccountBusy(false);}}}
+        onRenameSnapshot={async(snapshot,name)=>{if(accountBusy)return false;const session=authSessionRef.current,userId=accountUserRef.current?.id;if(!userId)return false;setAccountBusy(true);setAccountError(null);setAccountNotice(null);try{const result=await accountApi.renameSnapshot(snapshot.id,name);if(!isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id))return false;setSnapshots(current=>upsertSnapshot(current,result.snapshot));void refreshCloudProjects().catch(()=>undefined);setAccountNotice('Version renamed.');return true;}catch(error){if(isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id))setAccountError(error instanceof Error?error.message:'Could not rename version.');return false;}finally{if(isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id))setAccountBusy(false);}}}
         onLoadSnapshot={async snapshot=>{if(workspaceHydration!=='ready')return;await accountAction(async()=>{if(workspaceHydration!=='ready')return;const session=authSessionRef.current;const userId=accountUserRef.current?.id;if(!userId)return;const operation=++hydrationOperationRef.current;setWorkspaceHydration('loading');setAutosaveStatus('Finishing current autosave…');try{await autosaveRunnerRef.current.awaitIdle();if(!isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id)||!isActiveHydrationOperation(operation,hydrationOperationRef.current))return;const result=await accountApi.loadSnapshot(snapshot.id);if(!isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id)||!isActiveHydrationOperation(operation,hydrationOperationRef.current))return;autosaveRunnerRef.current.reset();const loaded=structuredClone(result.project);applyWorkspace(loaded);setAutosaveStatus(`Saved ${new Date(result.updatedAt).toLocaleTimeString()}`);setAccountNotice(`${snapshot.name} loaded into Current Version.`);}finally{if(isActiveHydration(session,userId,authSessionRef.current,accountUserRef.current?.id)&&isActiveHydrationOperation(operation,hydrationOperationRef.current))setWorkspaceHydration('ready');}})}}
         onDeleteSnapshot={async snapshot=>accountAction(async()=>{if(preferences.confirmDelete&&!window.confirm(`Delete saved version ${snapshot.name}?`))return;await commitWithNonfatalRefresh(()=>accountApi.deleteSnapshot(snapshot.id),()=>setSnapshots(current=>removeSnapshot(current,snapshot.id)),refreshCloudProjects);setAccountNotice('Saved version deleted.');})}/>
     </div>

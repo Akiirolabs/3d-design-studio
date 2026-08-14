@@ -4,6 +4,8 @@ export const TRANSFORM_SNAPS = Object.freeze({
   translation: 0.2,
   rotationDegrees: 15,
   scale: 0.25,
+  precisionTranslation: 0.05,
+  precisionScale: 0.05,
 });
 
 interface SnappableTransformControls {
@@ -12,10 +14,15 @@ interface SnappableTransformControls {
   setScaleSnap(value: number | null): unknown;
 }
 
-export function configureTransformSnapping(controls: SnappableTransformControls, enabled: boolean): void {
-  controls.setTranslationSnap(enabled ? TRANSFORM_SNAPS.translation : null);
+export function configureTransformSnapping(controls: SnappableTransformControls, enabled: boolean, precision = false): void {
+  controls.setTranslationSnap(enabled ? (precision ? TRANSFORM_SNAPS.precisionTranslation : TRANSFORM_SNAPS.translation) : null);
   controls.setRotationSnap(enabled ? TRANSFORM_SNAPS.rotationDegrees * Math.PI / 180 : null);
-  controls.setScaleSnap(enabled ? TRANSFORM_SNAPS.scale : null);
+  controls.setScaleSnap(enabled ? (precision ? TRANSFORM_SNAPS.precisionScale : TRANSFORM_SNAPS.scale) : null);
+}
+
+export type PrecisionResetEvent='keyup'|'blur'|'visibility-hidden'|'pointerup'|'modal-open';
+export function applyPrecisionControlEvent(controls:SnappableTransformControls,gridSnap:boolean,event:'keydown'|PrecisionResetEvent):void{
+  configureTransformSnapping(controls,gridSnap,event==='keydown');
 }
 
 export interface FrameCoalescer<T> {

@@ -1,4 +1,5 @@
 import { AssetCategory, EnvironmentSettings, EnvironmentTheme, ProjectData, SceneObject } from '../types';
+import {validateGroups} from './objectGrouping';
 import { getAssetCategory, isValidAssetTypeCategory, LEGACY_ARCHITECTURE_TYPES } from './assetCatalog';
 import { validateParametricExtrusion } from './parametricExtrusion';
 import { createSubtractedGeometry, transformIssue } from './booleanGeometry';
@@ -139,6 +140,7 @@ export function validateProjectData(value: unknown): ValidationResult<ProjectDat
   if ('error' in objects) return { success: false, error: objects.error };
   const environment = validateEnvironmentSettings(value.environment);
   if ('error' in environment) return { success: false, error: environment.error };
+  const groupError=validateGroups(objects.data,value.groups);if(groupError)return {success:false,error:groupError};
   return { success: true, data: value as unknown as ProjectData };
 }
 

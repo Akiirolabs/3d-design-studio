@@ -8,6 +8,7 @@ import {
   EnvironmentSettings,
   TransformMode,
   ViewportRenderMode,
+  ObjectGroup,
 } from '../types';
 import { disposeMaterials, disposeObject3DResources } from '../utils/threeResources';
 import { canTransformSelection, configureTransformSnapping, createFrameCoalescer, getDragTransition, restoreRejectedTransform } from '../utils/transformControls';
@@ -16,11 +17,13 @@ import { createExpandedAsset, isExpandedAssetType } from '../utils/expandedAsset
 import { createParametricExtrusionGeometry, parametricExtrusionKey } from '../utils/parametricExtrusion';
 import { syncExtrusionGeometry } from '../utils/extrusionSceneSync';
 import { booleanGeometryKey, createSubtractedGeometry } from '../utils/booleanGeometry';
+import {canTransformGroup} from '../utils/objectGrouping';
 
 interface Canvas3DProps {
   objects: SceneObject[];
   selectedObjectId: string | null;
   selectedObjectIds: string[];
+  groups:ObjectGroup[];
   onSelectObject: (id: string | null, additive?: boolean) => void;
   onUpdateObjectTransform: (
     id: string,
@@ -34,6 +37,8 @@ interface Canvas3DProps {
     rotation: [number, number, number],
     scale: [number, number, number]
   ) => void;
+  onTransformingChange?:(dragging:boolean)=>void;
+  onUpdateGroupTransform?:(groupId:string,position:[number,number,number],rotation:[number,number,number],scale:[number,number,number])=>void;
   environment: EnvironmentSettings;
   transformMode: TransformMode;
   renderMode: ViewportRenderMode;
@@ -46,9 +51,12 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   objects,
   selectedObjectId,
   selectedObjectIds,
+  groups,
   onSelectObject,
   onUpdateObjectTransform,
   onLiveUpdateObjectTransform,
+  onTransformingChange,
+  onUpdateGroupTransform,
   environment,
   transformMode,
   renderMode,
@@ -68,12 +76,16 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const ambientLightRef = useRef<THREE.AmbientLight | null>(null);
   const selectionBoxesRef = useRef<Map<string, THREE.BoxHelper>>(new Map());
+  const groupProxyRef=useRef<THREE.Object3D|null>(null);
   const shortcutsDisabledRef = useRef(shortcutsDisabled);
+  const gridSnapRef = useRef(environment.gridSnap);
 
   // Keep fresh references to transform callbacks to avoid stale listeners
   const onUpdateTransformRef = useRef(onUpdateObjectTransform);
   const onLiveTransformRef = useRef(onLiveUpdateObjectTransform);
   const onModelingNoticeRef = useRef(onModelingNotice);
+  const onTransformingChangeRef=useRef(onTransformingChange);
+  const onUpdateGroupTransformRef=useRef(onUpdateGroupTransform);
 
   useEffect(() => {
     onUpdateTransformRef.current = onUpdateObjectTransform;
@@ -84,6 +96,8 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   }, [onLiveUpdateObjectTransform]);
 
   useEffect(() => { onModelingNoticeRef.current=onModelingNotice; }, [onModelingNotice]);
+  useEffect(()=>{onTransformingChangeRef.current=onTransformingChange;},[onTransformingChange]);
+  useEffect(()=>{onUpdateGroupTransformRef.current=onUpdateGroupTransform;},[onUpdateGroupTransform]);
 
   useEffect(() => {
     shortcutsDisabledRef.current = shortcutsDisabled;
@@ -95,6 +109,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       orbitControls.enabled = policy.orbitEnabled;
     }
     if (transformControls) transformControls.enabled = policy.transformEnabled;
+    if(shortcutsDisabled&&transformControls)configureTransformSnapping(transformControls,gridSnapRef.current,false);
   }, [shortcutsDisabled]);
 
   // States to trigger ViewCube binding once initialized
@@ -156,6 +171,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     transformControls.space = 'world';
     scene.add(transformControls.getHelper());
     transformControlsRef.current = transformControls;
+    const groupProxy=new THREE.Object3D();groupProxy.userData.isGroupProxy=true;scene.add(groupProxy);groupProxyRef.current=groupProxy;
 
     type TransformUpdate = {
       id: string;
@@ -164,6 +180,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       scale: [number, number, number];
     };
     let dragStart:TransformUpdate|null=null;
+    let groupMemberStarts:Map<string,THREE.Matrix4>|null=null;
     const readTransform = (obj: THREE.Object3D): TransformUpdate | null => {
       const id = obj.userData.id;
       if (!id) return null;
@@ -197,6 +214,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     );
     const handleObjectChange = () => {
       if (!isTransformingRef.current || !transformControls.object) return;
+      if(transformControls.object.userData.isGroupProxy&&groupMemberStarts){
+        transformControls.object.updateMatrix();
+        groupMemberStarts.forEach((start,id)=>{const member=meshMapRef.current.get(id);if(!member)return;const matrix=transformControls.object!.matrix.clone().multiply(new THREE.Matrix4().makeTranslation(...(transformControls.object!.userData.startPivot as [number,number,number])).invert()).multiply(start);matrix.decompose(member.position,member.quaternion,member.scale);member.updateMatrix();member.updateMatrixWorld(true);});
+        return;
+      }
       const update = readTransform(transformControls.object);
       if (update) liveUpdates.schedule(update);
     };
@@ -207,10 +229,12 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       const transition = getDragTransition(isTransformingRef.current, event.value);
       orbitControls.enabled = !transition.isDragging;
       isTransformingRef.current = transition.isDragging;
-      if(transition.started&&transformControls.object)dragStart=readTransform(transformControls.object);
+      onTransformingChangeRef.current?.(transition.isDragging);
+      if(transition.started&&transformControls.object){dragStart=readTransform(transformControls.object);if(transformControls.object.userData.isGroupProxy){groupMemberStarts=new Map();(transformControls.object.userData.memberIds as string[]).forEach(id=>{const member=meshMapRef.current.get(id);if(member){member.updateMatrix();groupMemberStarts!.set(id,member.matrix.clone());}});}}
 
       if (transition.ended) {
         liveUpdates.cancel();
+        if(transformControls.object?.userData.isGroupProxy){const proxy=transformControls.object;onUpdateGroupTransformRef.current?.(proxy.userData.groupId,proxy.position.toArray() as [number,number,number],[proxy.rotation.x,proxy.rotation.y,proxy.rotation.z].map(THREE.MathUtils.radToDeg) as [number,number,number],proxy.scale.toArray() as [number,number,number]);groupMemberStarts=null;dragStart=null;return;}
         const update = transformControls.object ? readTransform(transformControls.object) : null;
         if (update) {
           const accepted=onUpdateTransformRef.current(update.id, update.position, update.rotation, update.scale);
@@ -250,6 +274,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       if (shortcutsDisabledRef.current) return;
       if ((e.key === 'Control' || e.key === 'Meta') && orbitControlsRef.current) {
         orbitControlsRef.current.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
+        if (transformControlsRef.current) configureTransformSnapping(transformControlsRef.current, gridSnapRef.current, true);
       }
     };
 
@@ -257,8 +282,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       if (shortcutsDisabledRef.current) return;
       if ((e.key === 'Control' || e.key === 'Meta') && orbitControlsRef.current) {
         orbitControlsRef.current.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+        if (transformControlsRef.current) configureTransformSnapping(transformControlsRef.current, gridSnapRef.current, false);
       }
     };
+    const resetPrecision=()=>{if(transformControlsRef.current)configureTransformSnapping(transformControlsRef.current,gridSnapRef.current,false);};
+    const handleVisibility=()=>{if(document.hidden)resetPrecision();};
 
     const domEl = renderer.domElement;
     domEl.addEventListener('contextmenu', handleContextMenu);
@@ -266,6 +294,9 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     domEl.addEventListener('pointermove', handlePointerMoveGlobal, true);
     window.addEventListener('keydown', handleKeyDownGlobal, true);
     window.addEventListener('keyup', handleKeyUpGlobal, true);
+    window.addEventListener('blur',resetPrecision);
+    window.addEventListener('pointerup',resetPrecision,true);
+    document.addEventListener('visibilitychange',handleVisibility);
 
     // 6. Lights
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -330,11 +361,15 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       domEl.removeEventListener('pointermove', handlePointerMoveGlobal, true);
       window.removeEventListener('keydown', handleKeyDownGlobal, true);
       window.removeEventListener('keyup', handleKeyUpGlobal, true);
+      window.removeEventListener('blur',resetPrecision);
+      window.removeEventListener('pointerup',resetPrecision,true);
+      document.removeEventListener('visibilitychange',handleVisibility);
       transformControls.removeEventListener('dragging-changed', handleDraggingChanged);
       transformControls.removeEventListener('objectChange', handleObjectChange);
       liveUpdates.cancel();
       transformControls.detach();
       transformControls.dispose();
+      scene.remove(groupProxy);groupProxyRef.current=null;
       orbitControls.dispose();
       meshMapRef.current.forEach((object) => {
         scene.remove(object);
@@ -360,6 +395,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
 
   // Update Gizmo Transform Mode (Translate / Rotate / Scale)
   useEffect(() => {
+    gridSnapRef.current = environment.gridSnap;
     if (transformControlsRef.current) {
       transformControlsRef.current.setMode(transformMode);
     }
@@ -376,7 +412,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     }
 
     if (transformControlsRef.current) {
-      configureTransformSnapping(transformControlsRef.current, environment.gridSnap);
+      configureTransformSnapping(transformControlsRef.current, environment.gridSnap, false);
     }
 
     rendererRef.current.shadowMap.enabled = environment.shadows;
@@ -502,7 +538,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     });
 
     // Attach/Detach Gizmo for the explicit primary selection.
-    if (selectedObjectId) {
+    const selectedGroup=groups.find(group=>group.memberIds.length===selectedObjectIds.length&&group.memberIds.every(id=>selectedObjectIds.includes(id)));
+    const exactGroup=selectedGroup&&canTransformGroup(objects,selectedGroup)===null?selectedGroup:null;
+    if(selectedGroup&&!exactGroup){transformControlsRef.current?.detach();}
+    else if(exactGroup&&groupProxyRef.current){const proxy=groupProxyRef.current;proxy.position.set(...exactGroup.pivot);proxy.rotation.set(0,0,0);proxy.scale.set(1,1,1);proxy.userData={isGroupProxy:true,groupId:exactGroup.id,memberIds:[...exactGroup.memberIds],startPivot:[...exactGroup.pivot]};proxy.updateMatrix();transformControlsRef.current?.detach();transformControlsRef.current?.attach(proxy);
+    } else if (selectedObjectId) {
       const selectedMesh = existingMap.get(selectedObjectId);
       const selData = objects.find((o) => o.id === selectedObjectId);
       if (selectedMesh && canTransformSelection(selData)) {
@@ -519,7 +559,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     } else {
       transformControlsRef.current?.detach();
     }
-  }, [objects, selectedObjectId, selectedObjectIds, renderMode]);
+  }, [objects, groups, selectedObjectId, selectedObjectIds, renderMode]);
 
   // Click & Raycasting Selection
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {

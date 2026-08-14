@@ -289,6 +289,18 @@ export function createApiRouter(db: AppDatabase): express.Router {
     res.status(201).json({snapshot:{id,name,createdAt,project:valid.data}});
   });
 
+  router.patch('/snapshots/:id',requireAuth,(req,res)=>{
+    const name=typeof req.body?.name==='string'?req.body.name.trim():'';
+    if(name.length<1||name.length>80)return res.status(400).json({error:'Snapshot name must be 1-80 characters.'});
+    const row=db.prepare('SELECT id,name,data_json,created_at FROM snapshots WHERE owner_id = ? AND id = ?').get(req.sessionUser!.id,req.params.id) as SnapshotRow;
+    if(!row)return res.status(404).json({error:'Snapshot not found.'});
+    let project:ProjectData|undefined;
+    try{const parsed=JSON.parse(row.data_json) as {id?:unknown};if(typeof parsed.id==='string')project=parseStoredProject({id:parsed.id,data_json:row.data_json});}catch{project=undefined;}
+    if(!project)return res.status(422).json({error:'Saved version data is invalid.'});
+    db.prepare('UPDATE snapshots SET name = ? WHERE owner_id = ? AND id = ?').run(name,req.sessionUser!.id,req.params.id);
+    res.json({snapshot:{id:row.id,name,createdAt:row.created_at,project}});
+  });
+
   router.delete('/snapshots/:id',requireAuth,(req,res)=>{
     const result=db.prepare('DELETE FROM snapshots WHERE owner_id = ? AND id = ?').run(req.sessionUser!.id,req.params.id);
     if(!result.changes)return res.status(404).json({error:'Snapshot not found.'});

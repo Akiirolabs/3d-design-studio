@@ -6,7 +6,7 @@ import { ASSET_TYPE_CATEGORIES, filterAssets } from '../utils/assetCatalog';
 import { createExpandedAsset, EXPANDED_ASSET_RECIPES, isExpandedAssetType, RPI4_PORT_CLEARANCES } from '../utils/expandedAssetGeometry';
 import { AI_ASSET_TYPES, normalizeGeneratedScene } from '../../server/generatedScene';
 import { validateSceneObjects } from '../utils/projectValidation';
-import { configureTransformSnapping, TRANSFORM_SNAPS } from '../utils/transformControls';
+import { applyPrecisionControlEvent, configureTransformSnapping, TRANSFORM_SNAPS } from '../utils/transformControls';
 import { DEFAULT_PARAMETRIC_EXTRUSION } from '../utils/parametricExtrusion';
 
 describe('expanded asset catalog', () => {
@@ -201,10 +201,8 @@ describe('expanded asset catalog', () => {
 });
 
 describe('fixed transform snapping', () => {
-  it('uses 0.2 translation increments without changing rotation or scale increments', () => {
-    expect(TRANSFORM_SNAPS).toEqual({ translation: 0.2, rotationDegrees: 15, scale: 0.25 });
-    expect(TRANSFORM_SNAPS.translation * -3).toBeCloseTo(-0.6);
-    expect(TRANSFORM_SNAPS.translation * 4).toBeCloseTo(0.8);
+  it('uses 1-unit translation and exposes Ctrl precision increments', () => {
+    expect(TRANSFORM_SNAPS).toEqual({ translation: 1, rotationDegrees: 15, scale: 0.25, precisionTranslation: 0.05, precisionScale: 0.05 });
   });
 
   it('applies and disables each transform snap independently', () => {
@@ -212,12 +210,16 @@ describe('fixed transform snapping', () => {
       setTranslationSnap: vi.fn(), setRotationSnap: vi.fn(), setScaleSnap: vi.fn(),
     };
     configureTransformSnapping(controls, true);
-    expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(0.2);
+    expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(1);
     expect(controls.setRotationSnap).toHaveBeenLastCalledWith(Math.PI / 12);
     expect(controls.setScaleSnap).toHaveBeenLastCalledWith(0.25);
     configureTransformSnapping(controls, false);
     expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(null);
     expect(controls.setRotationSnap).toHaveBeenLastCalledWith(null);
     expect(controls.setScaleSnap).toHaveBeenLastCalledWith(null);
+    configureTransformSnapping(controls, true, true);
+    expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(0.05);
+    expect(controls.setScaleSnap).toHaveBeenLastCalledWith(0.05);
   });
+  it('resets Ctrl precision for every interaction-ending event and respects disabled snapping',()=>{const controls={setTranslationSnap:vi.fn(),setRotationSnap:vi.fn(),setScaleSnap:vi.fn()};applyPrecisionControlEvent(controls,true,'keydown');expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(.05);for(const event of ['keyup','blur','visibility-hidden','pointerup','modal-open'] as const){applyPrecisionControlEvent(controls,true,event);expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(1);}applyPrecisionControlEvent(controls,false,'keydown');expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(null);expect(controls.setScaleSnap).toHaveBeenLastCalledWith(null);});
 });
