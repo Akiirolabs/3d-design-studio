@@ -201,8 +201,8 @@ describe('expanded asset catalog', () => {
 });
 
 describe('fixed transform snapping', () => {
-  it('uses 1-unit translation and exposes Ctrl precision increments', () => {
-    expect(TRANSFORM_SNAPS).toEqual({ translation: 1, rotationDegrees: 15, scale: 0.25, precisionTranslation: 0.05, precisionScale: 0.05 });
+  it('uses 0.2-unit translation and exposes Ctrl precision increments', () => {
+    expect(TRANSFORM_SNAPS).toEqual({ translation: 0.2, rotationDegrees: 15, scale: 0.25, precisionTranslation: 0.05, precisionScale: 0.05 });
   });
 
   it('applies and disables each transform snap independently', () => {
@@ -210,7 +210,7 @@ describe('fixed transform snapping', () => {
       setTranslationSnap: vi.fn(), setRotationSnap: vi.fn(), setScaleSnap: vi.fn(),
     };
     configureTransformSnapping(controls, true);
-    expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(1);
+    expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(0.2);
     expect(controls.setRotationSnap).toHaveBeenLastCalledWith(Math.PI / 12);
     expect(controls.setScaleSnap).toHaveBeenLastCalledWith(0.25);
     configureTransformSnapping(controls, false);
@@ -221,5 +221,5 @@ describe('fixed transform snapping', () => {
     expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(0.05);
     expect(controls.setScaleSnap).toHaveBeenLastCalledWith(0.05);
   });
-  it('resets Ctrl precision for every interaction-ending event and respects disabled snapping',()=>{const controls={setTranslationSnap:vi.fn(),setRotationSnap:vi.fn(),setScaleSnap:vi.fn()};applyPrecisionControlEvent(controls,true,'keydown');expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(.05);for(const event of ['keyup','blur','visibility-hidden','pointerup','modal-open'] as const){applyPrecisionControlEvent(controls,true,event);expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(1);}applyPrecisionControlEvent(controls,false,'keydown');expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(null);expect(controls.setScaleSnap).toHaveBeenLastCalledWith(null);});
+  it('resets Ctrl precision for every interaction-ending event and respects disabled snapping',()=>{const controls={setTranslationSnap:vi.fn(),setRotationSnap:vi.fn(),setScaleSnap:vi.fn()};applyPrecisionControlEvent(controls,true,'keydown');expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(.05);for(const event of ['keyup','blur','visibility-hidden','pointerup','modal-open'] as const){applyPrecisionControlEvent(controls,true,event);expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(.2);}applyPrecisionControlEvent(controls,false,'keydown');expect(controls.setTranslationSnap).toHaveBeenLastCalledWith(null);expect(controls.setScaleSnap).toHaveBeenLastCalledWith(null);});
 });

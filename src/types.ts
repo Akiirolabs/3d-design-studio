@@ -18,7 +18,7 @@ export interface ParametricExtrusionGeometry {
 export interface FaceExtrusionModifier {
   kind:'face-extrusion';
   sourceFingerprint:string;
-  face:{centroid:[number,number,number];normal:[number,number,number];basisU:[number,number,number];basisV:[number,number,number];profile:[number,number][];attachmentLoop:[number,number,number][];signature:string;sourceFingerprint:string;triangleIndices:number[];boundaryNeighborDotMax:number};
+  face:{centroid:[number,number,number];normal:[number,number,number];basisU:[number,number,number];basisV:[number,number,number];profile:[number,number][];attachmentLoop:[number,number,number][];signature:string;sourceFingerprint:string;triangleIndices:number[];boundaryNeighborDotMax:number;meshPath?:number[]};
   distance:number;baseScale:1;topScale:number;twistAngle:number;twistSteps:number;twistMode:'steps'|'smooth';
 }
 

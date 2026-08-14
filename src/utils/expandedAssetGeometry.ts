@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 export type Part = {
   name?: string;
@@ -102,18 +103,27 @@ export const EXPANDED_ASSET_RECIPES: Readonly<Record<string, readonly Part[]>> =
   'display-plinth': [box([1, 0.2, 1], [0, -0.35, 0]), box([0.75, 0.3, 0.75], [0, -0.1, 0]), box([0.5, 0.4, 0.5], [0, 0.25, 0])],
 };
 
+function closedAnnulus(inner:number,outer:number,depth:number,segments:number):THREE.BufferGeometry {
+  const shape=new THREE.Shape();shape.absarc(0,0,outer,0,Math.PI*2,false);const hole=new THREE.Path();hole.absarc(0,0,inner,0,Math.PI*2,true);shape.holes.push(hole);
+  const result=new THREE.ExtrudeGeometry(shape,{depth,bevelEnabled:false,curveSegments:segments,steps:1});result.translate(0,0,-depth/2);result.rotateX(-Math.PI/2);result.computeVertexNormals();return result;
+}
+
+function closedHemisphere(radius:number,widthSegments:number,heightSegments:number):THREE.BufferGeometry {
+  const shell=new THREE.SphereGeometry(radius,widthSegments,heightSegments,0,Math.PI*2,0,Math.PI/2),cap=new THREE.CircleGeometry(radius,widthSegments);cap.rotateX(Math.PI/2);const result=mergeGeometries([shell,cap],false);shell.dispose();cap.dispose();if(!result)throw new Error('Could not create closed hemisphere geometry.');result.computeVertexNormals();return result;
+}
+
 function geometry(part: Part): THREE.BufferGeometry {
   const [a = 0.5, b = 1, c = 16] = part.size ?? [];
   switch (part.shape) {
     case 'box': return new THREE.BoxGeometry(a, b, c);
     case 'roundedBox': return new RoundedBoxGeometry(a, b, c, 3, 0.1);
     case 'cylinder': return new THREE.CylinderGeometry(a, a, b, c);
-    case 'tube': return new THREE.CylinderGeometry(a, a, b, c, 1, true);
+    case 'tube': return closedAnnulus(Math.max(a*.72,1e-3),a,b,c);
     case 'sphere': return new THREE.SphereGeometry(a, b, c);
-    case 'hemisphere': return new THREE.SphereGeometry(a, b, c, 0, Math.PI * 2, 0, Math.PI / 2);
+    case 'hemisphere': return closedHemisphere(a,b,c);
     case 'cone': return new THREE.ConeGeometry(a, b, c);
     case 'torus': return new THREE.TorusGeometry(a, b, 12, c);
-    case 'ring': return new THREE.RingGeometry(a, b, c);
+    case 'ring': return closedAnnulus(a,b,Math.max((b-a)*.15,.015),c);
     case 'capsule': return new THREE.CapsuleGeometry(a, b, 8, c);
     case 'wedge': {
       const vertices = new Float32Array([-0.5,-0.5,-0.5, 0.5,-0.5,-0.5, -0.5,-0.5,0.5, 0.5,-0.5,0.5, -0.5,0.5,0.5, 0.5,0.5,0.5]);
