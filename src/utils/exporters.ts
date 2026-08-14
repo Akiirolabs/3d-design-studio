@@ -18,6 +18,7 @@ function downloadFile(content: Blob | string, filename: string, mimeType: string
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+export function buildExportScene(scene:THREE.Scene):THREE.Group{const clean=new THREE.Group(),cloneWithoutHelpers=(source:THREE.Object3D):THREE.Object3D|null=>{if(source.userData.editorHelper||source.renderOrder>=1000)return null;const clone=source.clone(false);for(const child of source.children){const next=cloneWithoutHelpers(child);if(next)clone.add(next);}return clone;};for(const child of scene.children)if(child.visible&&(child.name?.startsWith('user_object_')||child.type==='Mesh'||child.type==='Group')){const clone=cloneWithoutHelpers(child);if(clone)clean.add(clone);}return clean;}
 
 /**
  * Export Three.js scene to OBJ format
@@ -26,17 +27,9 @@ export function exportToOBJ(scene: THREE.Scene, filename = 'design_model.obj'): 
   if (!scene || !scene.children) return '';
   const exporter = new OBJExporter();
   // Filter out helpers, grid, lights if needed, or export mesh geometries
-  const cleanGroup = new THREE.Group();
-  scene.children.forEach((child) => {
-    if (child.name?.startsWith('user_object_') || child.type === 'Mesh' || child.type === 'Group') {
-      if (child.visible) {
-        cleanGroup.add(child.clone());
-      }
-    }
-  });
+  const cleanGroup = buildExportScene(scene);
 
-  const target = cleanGroup.children.length > 0 ? cleanGroup : scene;
-  const result = exporter.parse(target);
+  const result = exporter.parse(cleanGroup);
   if (typeof document !== 'undefined') {
     downloadFile(result, filename, 'text/plain');
   }
@@ -49,17 +42,9 @@ export function exportToOBJ(scene: THREE.Scene, filename = 'design_model.obj'): 
 export function exportToSTL(scene: THREE.Scene, filename = 'design_model.stl'): string | ArrayBuffer {
   if (!scene || !scene.children) return '';
   const exporter = new STLExporter();
-  const cleanGroup = new THREE.Group();
-  scene.children.forEach((child) => {
-    if (child.name?.startsWith('user_object_') || child.type === 'Mesh' || child.type === 'Group') {
-      if (child.visible) {
-        cleanGroup.add(child.clone());
-      }
-    }
-  });
+  const cleanGroup = buildExportScene(scene);
 
-  const target = cleanGroup.children.length > 0 ? cleanGroup : scene;
-  const result = exporter.parse(target, { binary: false });
+  const result = exporter.parse(cleanGroup, { binary: false });
   if (typeof document !== 'undefined') {
     const blob = typeof result === 'string' 
       ? new Blob([result], { type: 'text/plain' }) 
@@ -74,16 +59,10 @@ export function exportToSTL(scene: THREE.Scene, filename = 'design_model.stl'): 
  */
 export function exportToGLTF(scene: THREE.Scene, binary = true, filename = 'design_model.glb') {
   const exporter = new GLTFExporter();
-  const exportScene = new THREE.Group();
-  
-  scene.children.forEach((child) => {
-    if (child.name.startsWith('user_object_')) {
-      exportScene.add(child.clone());
-    }
-  });
+  const exportScene = buildExportScene(scene);
 
   exporter.parse(
-    exportScene.children.length > 0 ? exportScene : scene,
+    exportScene,
     (gltf) => {
       if (gltf instanceof ArrayBuffer) {
         const blob = new Blob([gltf], { type: 'application/octet-stream' });

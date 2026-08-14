@@ -16,8 +16,13 @@ import { viewportInputPolicy } from '../utils/modalKeyboard';
 import { createExpandedAsset, isExpandedAssetType } from '../utils/expandedAssetGeometry';
 import { createParametricExtrusionGeometry, parametricExtrusionKey } from '../utils/parametricExtrusion';
 import { syncExtrusionGeometry } from '../utils/extrusionSceneSync';
-import { booleanGeometryKey, createSubtractedGeometry } from '../utils/booleanGeometry';
+import { baseBooleanGeometry, BOOLEAN_TYPES, booleanGeometryKey, createSubtractedGeometry } from '../utils/booleanGeometry';
 import {canTransformGroup} from '../utils/objectGrouping';
+import {createEvaluatedSceneGeometryWithFallback} from '../utils/sceneGeometry';
+import {faceExtrusionEligibility,type FrozenPlanarFace} from '../utils/faceTopology';
+import {projectRayToLocalAxisDistance} from '../utils/faceExtrusionDrag';
+import {consumeFaceCancellationToken,editorControlPolicy,runFaceInteractionCancel,shouldRestoreTransformGizmo} from '../utils/faceInteractionController';
+const belongsToEditorHelper=(object:THREE.Object3D)=>{let current:THREE.Object3D|null=object;while(current){if(current.userData.editorHelper||current.renderOrder>=1000)return true;current=current.parent;}return false;};
 
 interface Canvas3DProps {
   objects: SceneObject[];
@@ -45,6 +50,11 @@ interface Canvas3DProps {
   onRegisterRenderer: (renderer: THREE.WebGLRenderer, scene: THREE.Scene) => void;
   shortcutsDisabled?: boolean;
   onModelingNotice?: (message: string) => void;
+  faceSelectionActive?:boolean;
+  onFaceSelected?:(face:FrozenPlanarFace)=>void;
+  onFaceSelectionRejected?:(message:string)=>void;
+  activeExtrusionFace?:FrozenPlanarFace|null;faceExtrusionDistance?:number;onFaceExtrusionDistancePreview?:(distance:number)=>void;onFaceExtrusionDistanceCommit?:(distance:number)=>void;onFaceExtrusionDistanceCancel?:()=>void;
+  faceInteractionCancellationToken?:number;
 }
 
 export const Canvas3D: React.FC<Canvas3DProps> = ({
@@ -63,6 +73,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   onRegisterRenderer,
   shortcutsDisabled = false,
   onModelingNotice,
+  faceSelectionActive=false,onFaceSelected,onFaceSelectionRejected,activeExtrusionFace=null,faceExtrusionDistance=.5,onFaceExtrusionDistancePreview,onFaceExtrusionDistanceCommit,onFaceExtrusionDistanceCancel,faceInteractionCancellationToken=0,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -79,6 +90,9 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   const groupProxyRef=useRef<THREE.Object3D|null>(null);
   const shortcutsDisabledRef = useRef(shortcutsDisabled);
   const gridSnapRef = useRef(environment.gridSnap);
+  const faceHighlightRef=useRef<THREE.Mesh|null>(null);
+  const faceHandleRef=useRef<THREE.Group|null>(null),faceDragRef=useRef<{start:number;latest:number;pointerId:number;element:HTMLDivElement}|null>(null),faceDragFrameRef=useRef<number|null>(null);
+  const faceCancellationTokenRef=useRef(faceInteractionCancellationToken);
 
   // Keep fresh references to transform callbacks to avoid stale listeners
   const onUpdateTransformRef = useRef(onUpdateObjectTransform);
@@ -99,6 +113,19 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   useEffect(()=>{onTransformingChangeRef.current=onTransformingChange;},[onTransformingChange]);
   useEffect(()=>{onUpdateGroupTransformRef.current=onUpdateGroupTransform;},[onUpdateGroupTransform]);
 
+  useEffect(()=>{
+    faceCancellationTokenRef.current=consumeFaceCancellationToken(faceCancellationTokenRef.current,faceInteractionCancellationToken,()=>runFaceInteractionCancel({
+      cancelFrame:()=>{if(faceDragFrameRef.current!==null)cancelAnimationFrame(faceDragFrameRef.current);faceDragFrameRef.current=null;},
+      releaseCapture:()=>{const drag=faceDragRef.current;if(drag?.element.hasPointerCapture(drag.pointerId))drag.element.releasePointerCapture(drag.pointerId);},
+      setTransforming:value=>onTransformingChangeRef.current?.(value),
+      clearDrag:()=>{faceDragRef.current=null;},
+      clearPreview:()=>{},
+      restoreCommitted:()=>{},
+      restoreGizmo:()=>{if(orbitControlsRef.current)orbitControlsRef.current.enabled=true;const controls=transformControlsRef.current;if(!controls)return;if(!shouldRestoreTransformGizmo(Boolean(activeExtrusionFace),faceSelectionActive)){controls.detach();controls.enabled=false;return;}controls.enabled=!shortcutsDisabledRef.current;const selected=selectedObjectId?meshMapRef.current.get(selectedObjectId):null;if(selected&&canTransformSelection(objects.find(object=>object.id===selectedObjectId)))controls.attach(selected);},
+      setCanceledStatus:()=>{},focus:()=>{},hasPersisted:Boolean(activeExtrusionFace),
+    }));
+  },[faceInteractionCancellationToken,selectedObjectId,objects,activeExtrusionFace,faceSelectionActive]);
+
   useEffect(() => {
     shortcutsDisabledRef.current = shortcutsDisabled;
     const orbitControls = orbitControlsRef.current;
@@ -116,6 +143,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
   const [controlsReady, setControlsReady] = useState(false);
 
   const selectedObject = objects.find((o) => o.id === selectedObjectId);
+  useEffect(()=>{const orbit=orbitControlsRef.current;if(orbit)orbit.enabled=!faceSelectionActive&&!shortcutsDisabled;return()=>{if(orbit)orbit.enabled=!shortcutsDisabled;};},[faceSelectionActive,shortcutsDisabled]);
+  useEffect(()=>{if(faceSelectionActive)return;const highlight=faceHighlightRef.current;if(highlight){highlight.parent?.remove(highlight);highlight.geometry.dispose();disposeMaterials([highlight.material]);faceHighlightRef.current=null;}},[faceSelectionActive]);
+  useEffect(()=>()=>{const highlight=faceHighlightRef.current;if(highlight){highlight.parent?.remove(highlight);highlight.geometry.dispose();disposeMaterials([highlight.material]);}},[]);
+  useEffect(()=>{const parent=selectedObjectId?meshMapRef.current.get(selectedObjectId):null,controls=transformControlsRef.current;if(!activeExtrusionFace||!parent)return;controls?.detach();if(controls)controls.enabled=false;const group=new THREE.Group(),origin=new THREE.Vector3(...activeExtrusionFace.centroid),normal=new THREE.Vector3(...activeExtrusionFace.normal),arrow=new THREE.ArrowHelper(normal,origin,Math.max(.15,faceExtrusionDistance),0x22d3ee,.12,.07),handle=new THREE.Mesh(new THREE.SphereGeometry(.065,12,8),new THREE.MeshBasicMaterial({color:0x67e8f9,depthTest:false})),boundaryGeometry=new THREE.BufferGeometry().setFromPoints(activeExtrusionFace.attachmentLoop.map(point=>new THREE.Vector3(...point))),boundary=new THREE.LineLoop(boundaryGeometry,new THREE.LineBasicMaterial({color:0x67e8f9,depthTest:false}));group.userData.editorHelper=true;handle.position.copy(origin).addScaledVector(normal,faceExtrusionDistance);handle.userData.faceDragHandle=true;handle.renderOrder=1100;boundary.renderOrder=1090;group.add(arrow,handle,boundary);parent.add(group);faceHandleRef.current=group;return()=>{if(faceDragFrameRef.current!==null)cancelAnimationFrame(faceDragFrameRef.current);faceDragFrameRef.current=null;faceDragRef.current=null;parent.remove(group);disposeObject3DResources(group);faceHandleRef.current=null;if(controls&&editorControlPolicy(faceSelectionActive,Boolean(activeExtrusionFace))==='transform'){controls.enabled=!shortcutsDisabled;const selected=selectedObjectId?meshMapRef.current.get(selectedObjectId):null;if(selected&&canTransformSelection(objects.find(object=>object.id===selectedObjectId)))controls.attach(selected);}};},[activeExtrusionFace,selectedObjectId,shortcutsDisabled,faceSelectionActive]);
+  useEffect(()=>{if(faceDragRef.current||!faceHandleRef.current||!activeExtrusionFace)return;const origin=new THREE.Vector3(...activeExtrusionFace.centroid),normal=new THREE.Vector3(...activeExtrusionFace.normal),arrow=faceHandleRef.current.children[0] as THREE.ArrowHelper,handle=faceHandleRef.current.children[1];arrow.setLength(Math.max(.15,faceExtrusionDistance),.12,.07);handle.position.copy(origin).addScaledVector(normal,faceExtrusionDistance);},[faceExtrusionDistance,activeExtrusionFace]);
 
   // Initialize Three.js Engine
   useEffect(() => {
@@ -470,19 +502,21 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
 
       const cutter = objData.boolean ? objects.find(candidate => candidate.id === objData.boolean!.cutterId) : undefined;
       const nextGeometryKey = objData.boolean&&cutter
-        ? booleanGeometryKey(objData,cutter)
-        : JSON.stringify({ geometry: objData.geometry ? parametricExtrusionKey(objData.geometry) : '', boolean: objData.boolean });
+        ? JSON.stringify([booleanGeometryKey(objData,cutter),objData.faceExtrusion])
+        : JSON.stringify({ geometry: objData.geometry ? parametricExtrusionKey(objData.geometry) : '', boolean: objData.boolean, faceExtrusion:objData.faceExtrusion });
       // Keep the last evaluated solid during a gizmo preview. The committed
       // state update below triggers exactly one Boolean recomputation.
       const geometryKey = isTransformingRef.current&&objData.boolean&&object3D ? object3D.userData.geometryKey : nextGeometryKey;
       if (object3D && object3D.userData.type === 'parametric-extrusion' && objData.geometry && object3D.userData.geometryKey !== geometryKey) {
         syncExtrusionGeometry(object3D, objData.geometry);
       }
+      if(object3D&&objData.faceExtrusion&&object3D.userData.geometryKey!==geometryKey){const mesh=object3D.children.find(child=>child instanceof THREE.Mesh&&!child.userData.faceDragHandle) as THREE.Mesh|undefined;if(mesh){const evaluated=createEvaluatedSceneGeometryWithFallback(objData,cutter?[objData,cutter]:[objData]);mesh.geometry.dispose();mesh.geometry=evaluated.geometry;object3D.userData.geometryKey=geometryKey;if(evaluated.error)onModelingNoticeRef.current?.(evaluated.error);}}
       // Recreate if not present, primitive type changed, or procedural parameters changed.
       if (!object3D || object3D.userData.type !== objData.type || object3D.userData.geometryKey !== geometryKey) {
         try {
           const replacement=createProcedural3DObject(objData,renderMode,cutter);
-          replacement.userData={id:objData.id,type:objData.type,geometryKey};
+          replacement.userData={...replacement.userData,id:objData.id,type:objData.type,geometryKey};
+          if(replacement.userData.modelingError)onModelingNoticeRef.current?.(replacement.userData.modelingError);
           replacement.name=`user_object_${objData.id}`;
           if(object3D){if(transformControlsRef.current?.object===object3D)transformControlsRef.current.detach();scene.remove(object3D);disposeObject3DResources(object3D);}
           object3D=replacement;scene.add(object3D);existingMap.set(objData.id,object3D);
@@ -538,6 +572,9 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     });
 
     // Attach/Detach Gizmo for the explicit primary selection.
+    const controls=transformControlsRef.current;
+    if(editorControlPolicy(faceSelectionActive,Boolean(activeExtrusionFace))==='face'){controls?.detach();if(controls)controls.enabled=false;return;}
+    if(controls)controls.enabled=!shortcutsDisabled;
     const selectedGroup=groups.find(group=>group.memberIds.length===selectedObjectIds.length&&group.memberIds.every(id=>selectedObjectIds.includes(id)));
     const exactGroup=selectedGroup&&canTransformGroup(objects,selectedGroup)===null?selectedGroup:null;
     if(selectedGroup&&!exactGroup){transformControlsRef.current?.detach();}
@@ -559,7 +596,7 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     } else {
       transformControlsRef.current?.detach();
     }
-  }, [objects, groups, selectedObjectId, selectedObjectIds, renderMode]);
+  }, [objects, groups, selectedObjectId, selectedObjectIds, renderMode, faceSelectionActive, activeExtrusionFace, shortcutsDisabled]);
 
   // Click & Raycasting Selection
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -570,11 +607,11 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     if (event.button !== 0) return;
 
     // Ignore clicks if actively interacting with or clicking transform gizmo handles
-    if (
+    if (!faceSelectionActive && (
       transformControlsRef.current?.dragging ||
       isTransformingRef.current ||
       transformControlsRef.current?.axis !== null
-    ) {
+    )) {
       return;
     }
 
@@ -592,7 +629,20 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
       }
     });
 
-    const intersects = raycaster.intersectObjects(selectableObjects, true);
+    const intersects = raycaster.intersectObjects(selectableObjects, true).filter(hit=>!belongsToEditorHelper(hit.object));
+
+    const handleHit=faceHandleRef.current?raycaster.intersectObject(faceHandleRef.current,true).find(hit=>hit.object.userData.faceDragHandle):undefined;if(handleHit&&activeExtrusionFace){event.currentTarget.setPointerCapture(event.pointerId);faceDragRef.current={start:faceExtrusionDistance,latest:faceExtrusionDistance,pointerId:event.pointerId,element:event.currentTarget};if(orbitControlsRef.current)orbitControlsRef.current.enabled=false;onTransformingChangeRef.current?.(true);return;}
+
+    if(faceSelectionActive){
+      const reject=(reason:string)=>{const hover=faceHighlightRef.current;if(hover){hover.parent?.remove(hover);hover.geometry.dispose();disposeMaterials([hover.material]);faceHighlightRef.current=null;}onFaceSelectionRejected?.(reason);};
+      const hit=intersects.find(intersection=>{let owner=intersection.object as THREE.Object3D;while(owner.parent&&owner.parent!==sceneRef.current&&!owner.userData.id)owner=owner.parent;return owner.userData.id===selectedObjectId&&intersection.object instanceof THREE.Mesh;});
+      if(!hit||hit.faceIndex===undefined){reject('Click a planar face on the selected solid.');return;}
+      const mesh=hit.object as THREE.Mesh,geometry=mesh.geometry as THREE.BufferGeometry,result=faceExtrusionEligibility(selectedObject?.type??'',geometry,hit.faceIndex);
+      if(result.error){reject(result.error);return;}
+      const previous=faceHighlightRef.current;if(previous){previous.parent?.remove(previous);previous.geometry.dispose();disposeMaterials([previous.material]);}
+      const source=geometry.getAttribute('position'),index=geometry.index,values:number[]=[];for(const triangle of result.face.triangleIndices)for(let corner=0;corner<3;corner++){const vertex=index?index.getX(triangle*3+corner):triangle*3+corner;values.push(source.getX(vertex),source.getY(vertex),source.getZ(vertex));}
+      const overlayGeometry=new THREE.BufferGeometry();overlayGeometry.setAttribute('position',new THREE.Float32BufferAttribute(values,3));const overlay=new THREE.Mesh(overlayGeometry,new THREE.MeshBasicMaterial({color:0x22d3ee,transparent:true,opacity:.5,side:THREE.DoubleSide,depthTest:false}));overlay.renderOrder=1000;mesh.add(overlay);faceHighlightRef.current=overlay;onFaceSelected?.(result.face);return;
+    }
 
     if (intersects.length > 0) {
       let topObj = intersects[0].object;
@@ -607,11 +657,17 @@ export const Canvas3D: React.FC<Canvas3DProps> = ({
     // Deselect if background clicked with left click
     onSelectObject(null, event.shiftKey);
   };
+  const handlePointerMove=(event:React.PointerEvent<HTMLDivElement>)=>{if(!containerRef.current||!cameraRef.current)return;const rect=containerRef.current.getBoundingClientRect(),raycaster=new THREE.Raycaster();raycaster.setFromCamera(new THREE.Vector2(((event.clientX-rect.left)/rect.width)*2-1,-((event.clientY-rect.top)/rect.height)*2+1),cameraRef.current);if(!faceDragRef.current){if(faceSelectionActive&&selectedObjectId){const parent=meshMapRef.current.get(selectedObjectId),hit=parent?raycaster.intersectObject(parent,true).find(item=>item.object instanceof THREE.Mesh&&item.faceIndex!==undefined):undefined;if(hit){const mesh=hit.object as THREE.Mesh,result=faceExtrusionEligibility(selectedObject?.type??'',mesh.geometry,hit.faceIndex!);if(!result.error){const previous=faceHighlightRef.current;if(previous){previous.parent?.remove(previous);previous.geometry.dispose();disposeMaterials([previous.material]);}const source=mesh.geometry.getAttribute('position'),index=mesh.geometry.index,values:number[]=[];for(const triangle of result.face.triangleIndices)for(let corner=0;corner<3;corner++){const vertex=index?index.getX(triangle*3+corner):triangle*3+corner;values.push(source.getX(vertex),source.getY(vertex),source.getZ(vertex));}const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(values,3));const overlay=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:0x22d3ee,transparent:true,opacity:.35,side:THREE.DoubleSide,depthTest:false}));overlay.renderOrder=1000;mesh.add(overlay);faceHighlightRef.current=overlay;}}}return;}if(!activeExtrusionFace)return;const origin=new THREE.Vector3(...activeExtrusionFace.centroid),normal=new THREE.Vector3(...activeExtrusionFace.normal),lineStart=origin.clone().addScaledVector(normal,-1000),lineEnd=origin.clone().addScaledVector(normal,1000),rayPoint=new THREE.Vector3(),linePoint=new THREE.Vector3();raycaster.ray.distanceSqToSegment(lineStart,lineEnd,rayPoint,linePoint);faceDragRef.current.latest=Math.max(.01,linePoint.sub(origin).dot(normal));if(faceDragFrameRef.current===null)faceDragFrameRef.current=requestAnimationFrame(()=>{faceDragFrameRef.current=null;if(faceDragRef.current)onFaceExtrusionDistancePreview?.(faceDragRef.current.latest);});};
+  const finishFaceDrag=(event:React.PointerEvent<HTMLDivElement>,commit:boolean)=>{const drag=faceDragRef.current;if(!drag)return;if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);if(faceDragFrameRef.current!==null)cancelAnimationFrame(faceDragFrameRef.current);faceDragFrameRef.current=null;faceDragRef.current=null;onTransformingChangeRef.current?.(false);if(commit)onFaceExtrusionDistanceCommit?.(drag.latest);else onFaceExtrusionDistanceCancel?.();};
+  useEffect(()=>{const cancel=()=>{const drag=faceDragRef.current;if(!drag)return;if(drag.element.hasPointerCapture(drag.pointerId))drag.element.releasePointerCapture(drag.pointerId);if(faceDragFrameRef.current!==null)cancelAnimationFrame(faceDragFrameRef.current);faceDragFrameRef.current=null;faceDragRef.current=null;onTransformingChangeRef.current?.(false);onFaceExtrusionDistanceCancel?.();};window.addEventListener('blur',cancel);return()=>{window.removeEventListener('blur',cancel);cancel();};},[selectedObjectId,transformMode,activeExtrusionFace]);
+  const handlePointerMoveWorld=(event:React.PointerEvent<HTMLDivElement>)=>{if(!faceDragRef.current||!activeExtrusionFace||!containerRef.current||!cameraRef.current||!selectedObjectId){if(faceSelectionActive&&containerRef.current&&cameraRef.current&&selectedObjectId){const rect=containerRef.current.getBoundingClientRect(),probe=new THREE.Raycaster(),parent=meshMapRef.current.get(selectedObjectId);probe.setFromCamera(new THREE.Vector2(((event.clientX-rect.left)/rect.width)*2-1,-((event.clientY-rect.top)/rect.height)*2+1),cameraRef.current);const hit=parent?probe.intersectObject(parent,true).find(item=>!belongsToEditorHelper(item.object)&&item.object instanceof THREE.Mesh&&item.faceIndex!==undefined):undefined,eligible=hit&&!faceExtrusionEligibility(selectedObject?.type??'',(hit.object as THREE.Mesh).geometry,hit.faceIndex!).error;if(!eligible&&faceHighlightRef.current){const highlight=faceHighlightRef.current;highlight.parent?.remove(highlight);highlight.geometry.dispose();disposeMaterials([highlight.material]);faceHighlightRef.current=null;}}handlePointerMove(event);return;}const parent=meshMapRef.current.get(selectedObjectId);if(!parent)return;const rect=containerRef.current.getBoundingClientRect(),raycaster=new THREE.Raycaster();raycaster.setFromCamera(new THREE.Vector2(((event.clientX-rect.left)/rect.width)*2-1,-((event.clientY-rect.top)/rect.height)*2+1),cameraRef.current);faceDragRef.current.latest=Math.max(.01,projectRayToLocalAxisDistance(raycaster.ray,parent.matrixWorld,new THREE.Vector3(...activeExtrusionFace.centroid),new THREE.Vector3(...activeExtrusionFace.normal)));if(faceDragFrameRef.current===null)faceDragFrameRef.current=requestAnimationFrame(()=>{faceDragFrameRef.current=null;if(faceDragRef.current)onFaceExtrusionDistancePreview?.(faceDragRef.current.latest);});};
 
   return (
     <div
       ref={containerRef}
       onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMoveWorld}
+      onPointerUp={event=>finishFaceDrag(event,true)} onPointerCancel={event=>finishFaceDrag(event,false)}
       className="relative w-full h-full overflow-hidden select-none bg-slate-950 cursor-crosshair"
     >
       {/* Sleek Viewport Orientation Helper / Status Badge */}
@@ -653,11 +709,14 @@ function createProcedural3DObject(data: SceneObject, renderMode: ViewportRenderM
 
   const mat = getMaterialForData(data, renderMode);
 
+  if(data.faceExtrusion){const evaluated=createEvaluatedSceneGeometryWithFallback(data,cutter?[data,cutter]:[data]);const mesh=new THREE.Mesh(evaluated.geometry,mat);mesh.castShadow=true;mesh.receiveShadow=true;group.userData.modelingError=evaluated.error;group.add(mesh);return group;}
+
   if (data.boolean?.kind === 'subtract') {
     if (!cutter) throw new Error('Boolean cutter is missing.');
     const mesh = new THREE.Mesh(createSubtractedGeometry(data, cutter), mat);
     mesh.castShadow = true; mesh.receiveShadow = true; group.add(mesh); return group;
   }
+  if(BOOLEAN_TYPES.has(data.type)){const mesh=new THREE.Mesh(baseBooleanGeometry(data),mat);mesh.castShadow=true;mesh.receiveShadow=true;group.add(mesh);return group;}
 
   switch (data.type) {
     case 'parametric-extrusion': {

@@ -7,6 +7,7 @@ export function getGroupingIssue(objects:SceneObject[],groups:ObjectGroup[],sele
   if(selectedIds.some(id=>!objects.some(object=>object.id===id)))return 'The selection contains a missing object.';
   if(groups.some(group=>group.memberIds.some(id=>selectedIds.includes(id))))return 'Ungroup existing members before creating another group. Nested groups are not supported yet.';
   if(selectedIds.some(id=>hasBooleanDependency(objects,id)))return 'Remove Boolean relationships before grouping these objects.';
+  if(selectedIds.some(id=>objects.find(object=>object.id===id)?.faceExtrusion))return 'Remove face extrusions before grouping these objects.';
   if(selectedIds.some(id=>objects.find(object=>object.id===id)?.locked))return 'Unlock every selected object before grouping.';
   return null;
 }
@@ -54,6 +55,7 @@ export function validateGroups(objects:SceneObject[],groups:unknown):string|null
     if(group.memberIds.some(id=>members.has(id)))return 'Nested or overlapping groups are not supported.';group.memberIds.forEach(id=>members.add(id));
     if(!Array.isArray(group.pivot)||group.pivot.length!==3||!group.pivot.every(Number.isFinite)||typeof group.visible!=='boolean'||typeof group.locked!=='boolean')return `Group ${group.id} has invalid properties.`;
     if(group.memberIds.some(id=>hasBooleanDependency(objects,id)))return `Group ${group.id} cannot contain a Boolean target or cutter.`;
+    if(group.memberIds.some(id=>objects.find(object=>object.id===id)?.faceExtrusion))return `Group ${group.id} cannot contain a face extrusion modifier.`;
   }return null;
 }
 export function canTransformGroup(objects:SceneObject[],group:ObjectGroup):string|null{if(!group.visible)return `${group.name} is hidden.`;if(group.locked)return `${group.name} is locked.`;const members=group.memberIds.map(id=>objects.find(object=>object.id===id));if(members.some(member=>!member))return `${group.name} contains a missing object.`;if(members.some(member=>!member!.visible))return `Show every object in ${group.name} before transforming it.`;if(members.some(member=>member!.locked))return `Unlock every object in ${group.name} before transforming it.`;return null;}

@@ -15,6 +15,13 @@ export interface ParametricExtrusionGeometry {
   twistMode: 'steps' | 'smooth';
 }
 
+export interface FaceExtrusionModifier {
+  kind:'face-extrusion';
+  sourceFingerprint:string;
+  face:{centroid:[number,number,number];normal:[number,number,number];basisU:[number,number,number];basisV:[number,number,number];profile:[number,number][];attachmentLoop:[number,number,number][];signature:string;sourceFingerprint:string;triangleIndices:number[];boundaryNeighborDotMax:number};
+  distance:number;baseScale:1;topScale:number;twistAngle:number;twistSteps:number;twistMode:'steps'|'smooth';
+}
+
 export type AssetCategory =
   | 'primitives'
   | 'architecture'
@@ -44,6 +51,7 @@ export interface SceneObject {
   visible: boolean;
   locked: boolean;
   geometry?: ParametricExtrusionGeometry;
+  faceExtrusion?:FaceExtrusionModifier;
   /** A non-destructive Boolean subtraction. The referenced cutter remains in the project. */
   boolean?: { kind: 'subtract'; cutterId: string };
   holeForId?: string;

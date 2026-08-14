@@ -1,7 +1,7 @@
 import { SceneObject } from '../types';
 
 export const TRANSFORM_SNAPS = Object.freeze({
-  translation: 0.2,
+  translation: 1,
   rotationDegrees: 15,
   scale: 0.25,
   precisionTranslation: 0.05,

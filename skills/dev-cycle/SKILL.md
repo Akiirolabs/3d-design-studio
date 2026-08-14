@@ -1,6 +1,6 @@
 ---
 name: dev-cycle
-description: Coordinate bounded autonomous improvement cycles between DevAudit, DevSync, and DevBase. Use when asked to clarify intent, research, audit, implement, test, and re-audit this application until the explicit interface contract and objective quality gates pass or a defined blocker or iteration limit is reached. Never commit, push, deploy, install dependencies, or handle secrets without explicit user approval.
+description: Coordinate persistent autonomous improvement cycles between DevAudit, DevSync, and DevBase. Use when asked to clarify intent, research, audit, implement, test, and re-audit this application until the explicit interface contract and objective quality gates pass or a genuine authority or infrastructure blocker is reached. Never commit, push, deploy, install dependencies, or handle secrets without explicit user approval.
 ---
 
 # Dev Cycle
@@ -20,7 +20,7 @@ When agent delegation is available and authorized, use separate fresh agents for
 
 ## Cycle protocol
 
-Default to at most 6 cycles unless the user specifies a lower limit.
+Continue cycling until the completion criteria pass. Do not stop merely because a fixed number of iterations has elapsed. Preserve cycle numbers in reports so progress remains auditable.
 
 1. **Baseline:** inspect repository instructions and working-tree state. Run available gates before editing. Record pre-existing failures separately.
 2. **Product audit:** when product expansion or competitive parity is in scope, have DevAudit test current workflows, verify qualifying competitor features, prioritize plausible gaps, and define measurable product acceptance criteria.
@@ -49,7 +49,6 @@ Report unavailable gates explicitly. Never translate unavailable verification in
 
 Stop and request user direction when:
 
-- 6 cycles are exhausted;
 - the same failure survives two attempted fixes;
 - tests cannot run because dependencies or infrastructure are unavailable;
 - a fix requires dependency installation or upgrades, secrets, external services, billing, production access, destructive data changes, or a major architecture/product decision;
@@ -62,7 +61,7 @@ Stop and request user direction when:
 
 Return:
 
-1. status: `PASSED WITHIN DEFINED GATES`, `STOPPED - BLOCKED`, or `STOPPED - CYCLE LIMIT`;
+1. status: `PASSED WITHIN DEFINED GATES` or `STOPPED - BLOCKED`;
 2. number of cycles completed;
 3. fixes made and regression tests added;
 4. exact gate results;

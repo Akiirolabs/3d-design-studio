@@ -9,7 +9,9 @@ import {
   AssetTemplate,
   CloudSession,
   ObjectGroup,
+  FaceExtrusionModifier,
 } from './types';
+import type {FrozenPlanarFace} from './utils/faceTopology';
 import {
   getInitialProject,
   saveProjectToStorage,
@@ -43,6 +45,8 @@ import { alignSelectedObjectPivots, getAlignmentIssue, reconcileSelection, resol
 import { applyBooleanSubtraction, hasBooleanDependency, removeBooleanSubtraction, updateTransformWithBooleanGuard } from './utils/booleanGeometry';
 import {canAutosaveCurrentWorkspace,editorShortcutsDisabled,isActiveHydration,isActiveHydrationOperation,type WorkspaceHydrationStatus} from './utils/accountHydration';
 import { applyMemberDrivenGroupTransform, canTransformGroup, expandGroupedSelection, getGroupingIssue, groupObjects, transformGroupMembers, ungroupObjects } from './utils/objectGrouping';
+import {createEvaluatedSceneGeometry} from './utils/sceneGeometry';
+import {runFaceSelectionRejection} from './utils/faceInteractionController';
 
 export default function App() {
   // Main Project State
@@ -60,6 +64,13 @@ export default function App() {
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
   const [gizmoDragging,setGizmoDragging]=useState(false);
   const [renderMode, setRenderMode] = useState<ViewportRenderMode>('shaded');
+  const [faceSelectionActive,setFaceSelectionActive]=useState(false);const [selectedExtrusionFace,setSelectedExtrusionFace]=useState<FrozenPlanarFace|null>(null);
+  const [faceExtrusionStatus,setFaceExtrusionStatus]=useState<{kind:'idle'|'info'|'error'|'success'|'canceled';message:string}>({kind:'idle',message:''});
+  const [faceInteractionCancellationToken,setFaceInteractionCancellationToken]=useState(0);
+  const faceSelectControlRef=useRef<HTMLButtonElement|null>(null),facePrimaryControlRef=useRef<HTMLElement|null>(null);const scheduleFaceFocus=useCallback((target:'select'|'primary')=>requestAnimationFrame(()=>{(target==='primary'?facePrimaryControlRef.current:faceSelectControlRef.current)?.focus();}),[]);
+  const cancelFaceInteraction=useCallback((message='Face extrusion canceled.')=>{setFaceInteractionCancellationToken(token=>token+1);setPreviewObject(null);setFaceSelectionActive(false);const persisted=project.objects.find(object=>object.id===selection.primaryId)?.faceExtrusion?.face??null;setSelectedExtrusionFace(persisted);setGizmoDragging(false);setFaceExtrusionStatus({kind:'canceled',message});scheduleFaceFocus(persisted?'primary':'select');},[project.objects,selection.primaryId,scheduleFaceFocus]);
+  useEffect(()=>{setFaceInteractionCancellationToken(token=>token+1);setFaceSelectionActive(false);setSelectedExtrusionFace(null);},[transformMode]);
+  useEffect(()=>{setFaceInteractionCancellationToken(token=>token+1);const modifier=project.objects.find(object=>object.id===selectedObjectId)?.faceExtrusion;if(modifier)setSelectedExtrusionFace(modifier.face);else{setSelectedExtrusionFace(null);setPreviewObject(current=>current?.faceExtrusion?null:current);}},[selectedObjectId,project.objects]);
 
   // Three.js References for Exporting & Snapshots
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -130,6 +141,7 @@ export default function App() {
     }
   },[applyWorkspace]);
   const handleSelectObject = useCallback((id: string | null, additive = false) => {
+    if(id!==selection.primaryId){setFaceSelectionActive(false);setSelectedExtrusionFace(null);setPreviewObject(null);setFaceExtrusionStatus({kind:'idle',message:''});}
     setPreviewObject(null);
     const currentGroup=(project.groups??[]).find(group=>group.memberIds.length===selection.ids.length&&group.memberIds.every(member=>selection.ids.includes(member)));
     if(additive&&(currentGroup||id&&expandGroupedSelection(project.groups??[],id))){setModelingNotice('Groups are selected as one unit. Ungroup before combining this selection with other objects.');return;}
@@ -168,6 +180,7 @@ export default function App() {
 
   const handleApplyBoolean = (targetId: string, cutterId: string) => {
     try {
+      if(project.objects.some(object=>(object.id===targetId||object.id===cutterId)&&object.faceExtrusion))throw new Error('Remove the face extrusion before changing Boolean source geometry.');
       if((project.groups??[]).some(group=>group.memberIds.includes(targetId)||group.memberIds.includes(cutterId)))throw new Error('Ungroup both operands before applying a Boolean hole.');
       const objects = applyBooleanSubtraction(project.objects, targetId, cutterId);
       pushStateToHistory({ ...project, objects });
@@ -179,6 +192,7 @@ export default function App() {
   };
 
   const handleRemoveBoolean = (targetId: string) => {
+    if(project.objects.find(object=>object.id===targetId)?.faceExtrusion){setModelingNotice('Remove the face extrusion before removing its Boolean source.');return;}
     const objects = removeBooleanSubtraction(project.objects, targetId);
     if (objects !== project.objects) {
       pushStateToHistory({ ...project, objects });
@@ -306,11 +320,15 @@ export default function App() {
     setPreviewObject(null);
     const group=(project.groups??[]).find(candidate=>candidate.memberIds.length===selectedObjectIds.length&&candidate.memberIds.every(id=>selectedObjectIds.includes(id)));
     const current=project.objects.find(object=>object.id===updatedObj.id);
+    if(current?.faceExtrusion&&!updatedObj.faceExtrusion){setSelectedExtrusionFace(null);setFaceSelectionActive(false);setFaceExtrusionStatus({kind:'success',message:'Face extrusion removed.'});}
     if(group&&current&&JSON.stringify([current.position,current.rotation,current.scale])!==JSON.stringify([updatedObj.position,updatedObj.rotation,updatedObj.scale])){setModelingNotice('Use Group Pivot controls or the shared gizmo to transform this group.');return;}
     const updatedObjects = project.objects.map((o) => (o.id === updatedObj.id ? updatedObj : o));
     const updatedProject = { ...project, objects: updatedObjects };
     pushStateToHistory(updatedProject);
   };
+  const buildFaceExtrusionObject=(parameters:Omit<FaceExtrusionModifier,'kind'|'sourceFingerprint'|'face'>)=>{const selected=project.objects.find(object=>object.id===selectedObjectId),face=selectedExtrusionFace??selected?.faceExtrusion?.face;if(!selected||!face)return null;return {...selected,faceExtrusion:{kind:'face-extrusion' as const,sourceFingerprint:face.sourceFingerprint,face,...parameters}};};
+  const handlePreviewFaceExtrusion=(parameters:Omit<FaceExtrusionModifier,'kind'|'sourceFingerprint'|'face'>)=>{const candidate=buildFaceExtrusionObject(parameters);if(!candidate){setPreviewObject(null);return;}try{const geometry=createEvaluatedSceneGeometry(candidate,project.objects.map(object=>object.id===candidate.id?candidate:object));geometry.dispose();setPreviewObject(candidate);setFaceExtrusionStatus({kind:'info',message:'Preview ready. Apply to save it.'});}catch(error){setPreviewObject(null);setFaceExtrusionStatus({kind:'error',message:error instanceof Error?error.message:'Face extrusion preview failed.'});}};
+  const handleApplyFaceExtrusion=(parameters:Omit<FaceExtrusionModifier,'kind'|'sourceFingerprint'|'face'>)=>{const candidate=buildFaceExtrusionObject(parameters);if(!candidate)return;try{const geometry=createEvaluatedSceneGeometry(candidate,project.objects.map(object=>object.id===candidate.id?candidate:object));geometry.dispose();handleUpdateObject(candidate);setFaceSelectionActive(false);setSelectedExtrusionFace(candidate.faceExtrusion!.face);setFaceExtrusionStatus({kind:'success',message:'Face extrusion applied.'});}catch(error){setPreviewObject(null);setFaceExtrusionStatus({kind:'error',message:error instanceof Error?error.message:'Face extrusion was not applied.'});}};
 
   const handlePreviewObject = (updatedObj: SceneObject | null) => {
     setPreviewObject(updatedObj);
@@ -499,13 +517,14 @@ export default function App() {
       } else if (e.key.toLowerCase() === 's') {
         setTransformMode('scale');
       } else if (e.key === 'Escape') {
+        if(faceSelectionActive||selectedExtrusionFace||previewObject?.faceExtrusion){cancelFaceInteraction();return;}
         setSelection({ ids: [], primaryId: null });
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selection, project.objects, historyIndex, history, settingsOpen,cloudSyncOpen]);
+  }, [selection, project.objects, historyIndex, history, settingsOpen,cloudSyncOpen,faceSelectionActive,selectedExtrusionFace,previewObject,cancelFaceInteraction]);
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
@@ -561,6 +580,15 @@ export default function App() {
             onRegisterRenderer={handleRegisterRenderer}
             shortcutsDisabled={editorShortcutsDisabled(settingsOpen,cloudSyncOpen)}
             onModelingNotice={setModelingNotice}
+            faceSelectionActive={faceSelectionActive}
+            onFaceSelected={face=>{setSelectedExtrusionFace(face);setFaceSelectionActive(false);setFaceExtrusionStatus({kind:'info',message:'Face selected. Adjust fields or drag the normal handle.'});scheduleFaceFocus('primary');}}
+            onFaceSelectionRejected={message=>runFaceSelectionRejection(message,{clearPreview:()=>setPreviewObject(null),setError:reason=>setFaceExtrusionStatus({kind:'error',message:reason}),focusSelect:()=>scheduleFaceFocus('select')})}
+            activeExtrusionFace={selectedExtrusionFace}
+            faceExtrusionDistance={previewObject?.faceExtrusion?.distance??project.objects.find(object=>object.id===selectedObjectId)?.faceExtrusion?.distance??.5}
+            onFaceExtrusionDistancePreview={distance=>{const modifier=previewObject?.faceExtrusion??project.objects.find(object=>object.id===selectedObjectId)?.faceExtrusion;if(modifier)handlePreviewFaceExtrusion({distance,baseScale:1,topScale:modifier.topScale,twistAngle:modifier.twistAngle,twistSteps:modifier.twistSteps,twistMode:modifier.twistMode});}}
+            onFaceExtrusionDistanceCommit={distance=>{const modifier=previewObject?.faceExtrusion??project.objects.find(object=>object.id===selectedObjectId)?.faceExtrusion;if(modifier)handleApplyFaceExtrusion({distance,baseScale:1,topScale:modifier.topScale,twistAngle:modifier.twistAngle,twistSteps:modifier.twistSteps,twistMode:modifier.twistMode});}}
+            onFaceExtrusionDistanceCancel={()=>cancelFaceInteraction('Drag canceled. Committed extrusion restored.')}
+            faceInteractionCancellationToken={faceInteractionCancellationToken}
           />
         </main>
 
@@ -588,6 +616,14 @@ export default function App() {
           onDuplicateObject={handleDuplicateObject}
           environment={project.environment}
           onUpdateEnvironment={handleUpdateEnvironment}
+          faceSelectionActive={faceSelectionActive}
+          selectedExtrusionFace={selectedExtrusionFace}
+          onBeginFaceSelection={()=>{if(project.objects.find(object=>object.id===selectedObjectId)?.faceExtrusion){setFaceExtrusionStatus({kind:'error',message:'Remove the current face extrusion before selecting a different face.'});return;}setSelectedExtrusionFace(null);setFaceSelectionActive(true);setFaceExtrusionStatus({kind:'info',message:'Click one planar face on the selected solid.'});}}
+          onCancelFaceExtrusion={()=>cancelFaceInteraction()}
+          onApplyFaceExtrusion={handleApplyFaceExtrusion}
+          onPreviewFaceExtrusion={handlePreviewFaceExtrusion}
+          faceStatus={faceExtrusionStatus}
+          onRegisterFaceControls={(select,primary)=>{faceSelectControlRef.current=select;facePrimaryControlRef.current=primary;}}
         />
       </div>
 
